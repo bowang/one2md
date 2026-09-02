@@ -14,6 +14,8 @@ The converter preserves rich-text emphasis, web hyperlinks, numbered and bullete
 
 ## Build and use
 
+Install ImageMagick, `pngquant`, and `jpegoptim`, and make sure the `magick`, `pngquant`, and `jpegoptim` commands are available on `PATH`. The converter converts TIFF-backed `.png` assets, recovers PNG, JPEG, GIF, and TIFF extensions from `.bin` assets, optimizes all real PNG assets with `pngquant`, and applies lossless optimization to `.jpg` and `.jpeg` assets with `jpegoptim`. On macOS, install them with `brew install imagemagick pngquant jpegoptim`.
+
 ```sh
 cargo build --release
 ./target/release/one2md Notes.one

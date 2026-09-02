@@ -10,9 +10,11 @@ use onenote_parser::section::{Section, SectionEntry};
 use onenote_parser::warn::Report;
 use std::collections::HashSet;
 use std::error::Error;
+use std::ffi::OsString;
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use typed_path::TypedPath;
 
 /// Information about a completed conversion.
@@ -1898,11 +1900,43 @@ impl AssetWriter {
         if name.is_empty() {
             name = format!("asset-{:04}.bin", self.next_number());
         }
+
+        let mut prefix = Vec::with_capacity(12);
+        reader.by_ref().take(12).read_to_end(&mut prefix)?;
+        if Path::new(&name)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("bin"))
+            && let Some(extension) = inferred_bin_extension(&prefix)
+        {
+            let mut corrected = PathBuf::from(&name);
+            corrected.set_extension(extension);
+            name = corrected.to_string_lossy().into_owned();
+        }
         name = self.unique_name(name);
 
         let destination = self.directory.join(&name);
+        let extension = Path::new(&name)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default();
+        let png_name = extension.eq_ignore_ascii_case("png");
+        let jpeg_name =
+            extension.eq_ignore_ascii_case("jpg") || extension.eq_ignore_ascii_case("jpeg");
         let mut output = fs::File::create(destination)?;
+        let tiff_as_png = png_name && is_tiff_payload(&prefix);
+        output.write_all(&prefix)?;
         io::copy(&mut reader, &mut output)?;
+        drop(output);
+
+        let destination = self.directory.join(&name);
+        if tiff_as_png {
+            convert_tiff_to_png(&destination)?;
+        }
+        if png_name && (tiff_as_png || is_png_payload(&prefix)) {
+            optimize_png(&destination)?;
+        } else if jpeg_name && is_jpeg_payload(&prefix) {
+            optimize_jpeg(&destination)?;
+        }
         self.count += 1;
 
         Ok(format!(
@@ -1930,6 +1964,127 @@ impl AssetWriter {
         }
         self.used.insert(candidate.to_lowercase());
         candidate
+    }
+}
+
+fn is_tiff_payload(prefix: &[u8]) -> bool {
+    prefix.starts_with(b"II*\0")
+        || prefix.starts_with(b"MM\0*")
+        || prefix.starts_with(b"II+\0")
+        || prefix.starts_with(b"MM\0+")
+}
+
+fn is_png_payload(prefix: &[u8]) -> bool {
+    prefix.starts_with(b"\x89PNG")
+}
+
+fn is_jpeg_payload(prefix: &[u8]) -> bool {
+    prefix.starts_with(b"\xff\xd8\xff")
+}
+
+fn inferred_bin_extension(prefix: &[u8]) -> Option<&'static str> {
+    if is_png_payload(prefix) {
+        Some("png")
+    } else if is_jpeg_payload(prefix) {
+        Some("jpg")
+    } else if prefix.starts_with(b"GIF87a") || prefix.starts_with(b"GIF89a") {
+        Some("gif")
+    } else if is_tiff_payload(prefix) {
+        Some("tiff")
+    } else {
+        None
+    }
+}
+
+fn convert_tiff_to_png(path: &Path) -> io::Result<()> {
+    let converted = path.with_extension("converted.png");
+    let mut first_frame = OsString::from(path.as_os_str());
+    first_frame.push("[0]");
+    let result = Command::new("magick")
+        .arg(first_frame)
+        .args(["-alpha", "on", "-depth", "8", "-define", "png:color-type=6"])
+        .arg(&converted)
+        .output();
+
+    match result {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let _ = fs::remove_file(&converted);
+            return Err(io::Error::other(format!(
+                "ImageMagick failed to convert TIFF asset '{}': {}",
+                path.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Err(error) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to run ImageMagick for TIFF asset '{}': {error}",
+                    path.display()
+                ),
+            ));
+        }
+    }
+
+    fs::rename(converted, path)
+}
+
+fn optimize_png(path: &Path) -> io::Result<()> {
+    let optimized = path.with_extension("pngquant.png");
+    let result = Command::new("pngquant")
+        .args(["--force", "--strip", "--output"])
+        .arg(&optimized)
+        .arg("--")
+        .arg(path)
+        .output();
+
+    match result {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let _ = fs::remove_file(&optimized);
+            return Err(io::Error::other(format!(
+                "pngquant failed for '{}': {}",
+                path.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Err(error) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("failed to run pngquant for '{}': {error}", path.display()),
+            ));
+        }
+    }
+
+    if fs::metadata(&optimized)?.len() < fs::metadata(path)?.len() {
+        fs::rename(&optimized, path)?;
+    } else {
+        fs::remove_file(optimized)?;
+    }
+    Ok(())
+}
+
+fn optimize_jpeg(path: &Path) -> io::Result<()> {
+    let output = Command::new("jpegoptim")
+        .args(["--auto-mode", "--quiet"])
+        .arg(path)
+        .output()
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("failed to run jpegoptim for '{}': {error}", path.display()),
+            )
+        })?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "jpegoptim failed for '{}': {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
     }
 }
 

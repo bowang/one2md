@@ -29,6 +29,87 @@ fn markdown_escaping_preserves_text_and_table_cells() {
 }
 
 #[test]
+fn tiff_payloads_are_detected_and_converted_to_png() {
+    use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
+    use std::io::Cursor;
+
+    let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(64, 64, Rgba([1, 2, 3, 255])));
+    let mut tiff = Cursor::new(Vec::new());
+    image.write_to(&mut tiff, ImageFormat::Tiff).unwrap();
+    let tiff = tiff.into_inner();
+
+    assert!(is_tiff_payload(&tiff[..4]));
+    let directory = tempfile::tempdir().unwrap();
+    let mut assets = AssetWriter::new(directory.path().to_owned(), "_assets".to_owned());
+    assets
+        .write_reader("mislabeled.png", Some("tiff"), Box::new(Cursor::new(tiff)))
+        .unwrap();
+
+    let png = fs::read(directory.path().join("mislabeled.png")).unwrap();
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(png[25], 3, "pngquant should emit an indexed PNG");
+    let decoded = image::load_from_memory_with_format(&png, ImageFormat::Png).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (64, 64));
+}
+
+#[test]
+fn png_and_jpeg_assets_are_optimized() {
+    use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
+    use std::io::Cursor;
+
+    let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(64, 64, Rgba([1, 2, 3, 255])));
+    let directory = tempfile::tempdir().unwrap();
+    let mut assets = AssetWriter::new(directory.path().to_owned(), "_assets".to_owned());
+
+    let mut png = Cursor::new(Vec::new());
+    image.write_to(&mut png, ImageFormat::Png).unwrap();
+    let png = png.into_inner();
+    let png_link = assets
+        .write_reader("image.bin", Some("bin"), Box::new(Cursor::new(png.clone())))
+        .unwrap();
+    assert_eq!(png_link, "_assets/image.png");
+    let optimized_png = fs::read(directory.path().join("image.png")).unwrap();
+    assert_eq!(&optimized_png[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(optimized_png[25], 3);
+    assert!(optimized_png.len() < png.len());
+
+    let mut jpeg = Cursor::new(Vec::new());
+    image.write_to(&mut jpeg, ImageFormat::Jpeg).unwrap();
+    let mut jpeg = jpeg.into_inner();
+    jpeg.extend_from_slice(&[0; 4096]);
+    let jpeg_link = assets
+        .write_reader(
+            "photo.bin",
+            Some("bin"),
+            Box::new(Cursor::new(jpeg.clone())),
+        )
+        .unwrap();
+    assert_eq!(jpeg_link, "_assets/photo.jpg");
+    let optimized_jpeg = fs::read(directory.path().join("photo.jpg")).unwrap();
+    assert!(optimized_jpeg.starts_with(b"\xff\xd8\xff"));
+    assert!(optimized_jpeg.len() < jpeg.len());
+
+    let gif_link = assets
+        .write_reader(
+            "animation.bin",
+            Some("bin"),
+            Box::new(Cursor::new(b"GIF89a test")),
+        )
+        .unwrap();
+    assert_eq!(gif_link, "_assets/animation.gif");
+    assert!(directory.path().join("animation.gif").is_file());
+
+    let unknown_link = assets
+        .write_reader(
+            "unknown.bin",
+            Some("bin"),
+            Box::new(Cursor::new(b"unknown data")),
+        )
+        .unwrap();
+    assert_eq!(unknown_link, "_assets/unknown.bin");
+}
+
+#[test]
 fn markdown_tables_keep_the_required_leading_blank_line() {
     let directory = tempfile::tempdir().unwrap();
     let mut assets = AssetWriter::new(directory.path().join("_assets"), "../_assets".to_owned());

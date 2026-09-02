@@ -10,5 +10,5 @@ onenote_parser = { version = "=2.0.0", features = ["onepkg"] }
 typed-path = "0.12"
 
 [dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff"] }
 tempfile = "3"
-
