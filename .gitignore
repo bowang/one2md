@@ -1,0 +1,19 @@
+# Rust build output
+/target/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.uv-cache/
+
+# Coverage output
+.coverage
+htmlcov/
+
+# macOS metadata
+.DS_Store
