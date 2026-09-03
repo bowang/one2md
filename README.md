@@ -14,13 +14,16 @@ The converter preserves rich-text emphasis, fixed-width fonts, web hyperlinks, n
 
 ## Build and use
 
-Install ImageMagick, `pngquant`, and `jpegoptim`, and make sure the `magick`, `pngquant`, and `jpegoptim` commands are available on `PATH`. The converter converts TIFF-backed `.png` assets, recovers PNG, JPEG, GIF, and TIFF extensions from `.bin` assets, optimizes all real PNG assets with `pngquant`, and applies lossless optimization to `.jpg` and `.jpeg` assets with `jpegoptim`. On macOS, install them with `brew install imagemagick pngquant jpegoptim`.
+Install ImageMagick and, unless using `--no-image-optimization`, install `pngquant` and `jpegoptim`. Make sure the required commands are available on `PATH`. The converter converts TIFF-backed `.png` assets, recovers PNG, JPEG, GIF, and TIFF extensions from `.bin` assets, optimizes all real PNG assets with `pngquant`, and applies lossless optimization to `.jpg` and `.jpeg` assets with `jpegoptim`. On macOS, install them with `brew install imagemagick pngquant jpegoptim`.
+
+Pass `--no-image-optimization` to skip pngquant and jpegoptim when conversion speed or exact preservation of the original PNG/JPEG bytes is preferred. Image format detection and TIFF-to-PNG correction still run.
 
 ```sh
 cargo build --release
 ./target/release/one2md Notes.one
 ./target/release/one2md Notebook.onetoc2 -o notebook
 ./target/release/one2md Export.onepkg --output export
+./target/release/one2md Notes.one -o notes --no-image-optimization
 ```
 
 For the supplied example:
@@ -36,6 +39,7 @@ To convert a directory of OneNote backups while selecting only the latest filesy
 ```sh
 cargo build --release
 python3 scripts/convert_onenote_backups.py /path/to/Backup -o backup-markdown
+python3 scripts/convert_onenote_backups.py /path/to/Backup -o backup-markdown --no-image-optimization
 ```
 
 The script scans recursively, treats the directory and section name together as the section identity, and passes all selected `.one` files to one batch conversion. Selected backups are temporarily staged under their logical section names so backup date suffixes do not leak into output folder names. Their notebook and section-group folders are preserved relative to the backup root, while all assets remain in a single output-root `_assets` folder and every converted section receives a hierarchy-aware `_index.md`.

@@ -104,7 +104,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("backup_directory", type=Path)
     parser.add_argument("-o", "--output", type=Path, required=True)
     parser.add_argument("--one2md", type=Path, help="path to the one2md executable")
+    parser.add_argument(
+        "--no-image-optimization",
+        action="store_true",
+        help="skip pngquant and jpegoptim size optimization",
+    )
     return parser.parse_args()
+
+
+def converter_command(
+    converter: Path,
+    staged: list[Path],
+    source_root: Path,
+    output: Path,
+    no_image_optimization: bool,
+) -> list[str]:
+    command = [
+        str(converter),
+        *(str(path) for path in staged),
+        "--source-root",
+        str(source_root),
+        "-o",
+        str(output),
+    ]
+    if no_image_optimization:
+        command.append("--no-image-optimization")
+    return command
 
 
 def main() -> int:
@@ -133,14 +158,13 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="one2md-selected-") as staging_directory:
         staged = stage_backups(backups, Path(staging_directory))
-        command = [
-            str(converter),
-            *(str(path) for path in staged),
-            "--source-root",
-            staging_directory,
-            "-o",
-            str(args.output),
-        ]
+        command = converter_command(
+            converter,
+            staged,
+            Path(staging_directory),
+            args.output,
+            args.no_image_optimization,
+        )
         return subprocess.run(command, check=False).returncode
 
 

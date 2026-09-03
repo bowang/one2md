@@ -101,7 +101,11 @@ fn multiline_fixed_width_text_uses_a_collision_safe_code_fence() {
 #[test]
 fn consecutive_fixed_width_rows_are_merged_into_one_code_block() {
     let directory = tempfile::tempdir().unwrap();
-    let mut assets = AssetWriter::new(directory.path().join("_assets"), "../_assets".to_owned());
+    let mut assets = AssetWriter::new(
+        directory.path().join("_assets"),
+        "../_assets".to_owned(),
+        true,
+    );
     let mut renderer = Renderer::new(&mut assets);
     renderer.pending_code_rows = vec![
         PendingCodeRow {
@@ -134,7 +138,7 @@ fn tiff_payloads_are_detected_and_converted_to_png() {
 
     assert!(is_tiff_payload(&tiff[..4]));
     let directory = tempfile::tempdir().unwrap();
-    let mut assets = AssetWriter::new(directory.path().to_owned(), "_assets".to_owned());
+    let mut assets = AssetWriter::new(directory.path().to_owned(), "_assets".to_owned(), true);
     assets
         .write_reader("mislabeled.png", Some("tiff"), Box::new(Cursor::new(tiff)))
         .unwrap();
@@ -153,7 +157,7 @@ fn png_and_jpeg_assets_are_optimized() {
 
     let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(64, 64, Rgba([1, 2, 3, 255])));
     let directory = tempfile::tempdir().unwrap();
-    let mut assets = AssetWriter::new(directory.path().to_owned(), "_assets".to_owned());
+    let mut assets = AssetWriter::new(directory.path().to_owned(), "_assets".to_owned(), true);
 
     let mut png = Cursor::new(Vec::new());
     image.write_to(&mut png, ImageFormat::Png).unwrap();
@@ -204,9 +208,55 @@ fn png_and_jpeg_assets_are_optimized() {
 }
 
 #[test]
+fn image_optimization_can_be_disabled() {
+    use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
+    use std::io::Cursor;
+
+    assert!(ConversionOptions::default().optimize_images);
+    let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(64, 64, Rgba([1, 2, 3, 255])));
+    let directory = tempfile::tempdir().unwrap();
+    let mut assets = AssetWriter::new(directory.path().to_owned(), "_assets".to_owned(), false);
+
+    let mut png = Cursor::new(Vec::new());
+    image.write_to(&mut png, ImageFormat::Png).unwrap();
+    let png = png.into_inner();
+    assets
+        .write_reader(
+            "unoptimized.png",
+            Some("png"),
+            Box::new(Cursor::new(png.clone())),
+        )
+        .unwrap();
+    assert_eq!(
+        fs::read(directory.path().join("unoptimized.png")).unwrap(),
+        png
+    );
+
+    let mut jpeg = Cursor::new(Vec::new());
+    image.write_to(&mut jpeg, ImageFormat::Jpeg).unwrap();
+    let mut jpeg = jpeg.into_inner();
+    jpeg.extend_from_slice(&[0; 4096]);
+    assets
+        .write_reader(
+            "unoptimized.jpg",
+            Some("jpg"),
+            Box::new(Cursor::new(jpeg.clone())),
+        )
+        .unwrap();
+    assert_eq!(
+        fs::read(directory.path().join("unoptimized.jpg")).unwrap(),
+        jpeg
+    );
+}
+
+#[test]
 fn markdown_tables_keep_the_required_leading_blank_line() {
     let directory = tempfile::tempdir().unwrap();
-    let mut assets = AssetWriter::new(directory.path().join("_assets"), "../_assets".to_owned());
+    let mut assets = AssetWriter::new(
+        directory.path().join("_assets"),
+        "../_assets".to_owned(),
+        true,
+    );
     let mut renderer = Renderer::new(&mut assets);
     let table = "| Allocation | ${A}_{i}=1$ |\n| --- | --- |\n| Selection | ${S}_{i}=2$ |";
 

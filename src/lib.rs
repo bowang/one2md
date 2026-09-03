@@ -30,12 +30,36 @@ pub struct ConversionSummary {
     pub output: PathBuf,
 }
 
+/// Optional conversion behavior. Defaults preserve the existing CLI behavior.
+#[derive(Clone, Copy, Debug)]
+pub struct ConversionOptions {
+    /// Whether PNG and JPEG assets should be optimized for size.
+    pub optimize_images: bool,
+}
+
+impl Default for ConversionOptions {
+    fn default() -> Self {
+        Self {
+            optimize_images: true,
+        }
+    }
+}
+
 /// Convert a OneNote section, notebook, or package into a folder of Markdown pages.
 pub fn convert_file(
     input: &Path,
     output: &Path,
 ) -> Result<ConversionSummary, Box<dyn Error + Send + Sync>> {
-    convert_files([input], output)
+    convert_files_with_options([input], output, ConversionOptions::default())
+}
+
+/// Convert one OneNote input with explicit conversion options.
+pub fn convert_file_with_options(
+    input: &Path,
+    output: &Path,
+    options: ConversionOptions,
+) -> Result<ConversionSummary, Box<dyn Error + Send + Sync>> {
+    convert_files_with_options([input], output, options)
 }
 
 /// Convert multiple OneNote inputs into one folder of Markdown sections.
@@ -47,7 +71,20 @@ where
     I: IntoIterator<Item = P>,
     P: AsRef<Path>,
 {
-    convert_files_internal(inputs, None, output)
+    convert_files_with_options(inputs, output, ConversionOptions::default())
+}
+
+/// Convert multiple OneNote inputs with explicit conversion options.
+pub fn convert_files_with_options<I, P>(
+    inputs: I,
+    output: &Path,
+    options: ConversionOptions,
+) -> Result<ConversionSummary, Box<dyn Error + Send + Sync>>
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
+    convert_files_internal(inputs, None, output, options)
 }
 
 /// Convert multiple inputs while preserving their parent paths relative to `source_root`.
@@ -60,13 +97,33 @@ where
     I: IntoIterator<Item = P>,
     P: AsRef<Path>,
 {
-    convert_files_internal(inputs, Some(source_root), output)
+    convert_files_with_hierarchy_and_options(
+        inputs,
+        source_root,
+        output,
+        ConversionOptions::default(),
+    )
+}
+
+/// Convert multiple inputs with hierarchy preservation and explicit options.
+pub fn convert_files_with_hierarchy_and_options<I, P>(
+    inputs: I,
+    source_root: &Path,
+    output: &Path,
+    options: ConversionOptions,
+) -> Result<ConversionSummary, Box<dyn Error + Send + Sync>>
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
+    convert_files_internal(inputs, Some(source_root), output, options)
 }
 
 fn convert_files_internal<I, P>(
     inputs: I,
     source_root: Option<&Path>,
     output: &Path,
+    options: ConversionOptions,
 ) -> Result<ConversionSummary, Box<dyn Error + Send + Sync>>
 where
     I: IntoIterator<Item = P>,
@@ -79,7 +136,7 @@ where
     let skip_malformed_inputs = inputs.len() > 1;
 
     let parser = Parser::new();
-    let mut renderer = FolderRenderer::new(output)?;
+    let mut renderer = FolderRenderer::new(output, options.optimize_images)?;
     let mut warnings = Vec::new();
 
     for input in inputs {
@@ -242,13 +299,17 @@ struct PageIndexEntry {
 }
 
 impl FolderRenderer {
-    fn new(root: &Path) -> io::Result<Self> {
+    fn new(root: &Path, optimize_images: bool) -> io::Result<Self> {
         fs::create_dir_all(root)?;
         Ok(Self {
             root: root.to_owned(),
             sections: HashSet::new(),
             pages: 0,
-            assets: AssetWriter::new(root.join("_assets"), "../_assets".to_owned()),
+            assets: AssetWriter::new(
+                root.join("_assets"),
+                "../_assets".to_owned(),
+                optimize_images,
+            ),
         })
     }
 
@@ -2144,15 +2205,17 @@ struct AssetWriter {
     relative_directory: String,
     used: HashSet<String>,
     count: usize,
+    optimize_images: bool,
 }
 
 impl AssetWriter {
-    fn new(directory: PathBuf, relative_directory: String) -> Self {
+    fn new(directory: PathBuf, relative_directory: String, optimize_images: bool) -> Self {
         Self {
             directory,
             relative_directory,
             used: HashSet::new(),
             count: 0,
+            optimize_images,
         }
     }
 
@@ -2209,9 +2272,9 @@ impl AssetWriter {
         if tiff_as_png {
             convert_tiff_to_png(&destination)?;
         }
-        if png_name && (tiff_as_png || is_png_payload(&prefix)) {
+        if self.optimize_images && png_name && (tiff_as_png || is_png_payload(&prefix)) {
             optimize_png(&destination)?;
-        } else if jpeg_name && is_jpeg_payload(&prefix) {
+        } else if self.optimize_images && jpeg_name && is_jpeg_payload(&prefix) {
             optimize_jpeg(&destination)?;
         }
         self.count += 1;

@@ -1,4 +1,6 @@
-use one2md::{convert_files, convert_files_with_hierarchy};
+use one2md::{
+    ConversionOptions, convert_files_with_hierarchy_and_options, convert_files_with_options,
+};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -16,6 +18,8 @@ Arguments:
 Options:
   -o, --output DIR    Output directory (default: INPUT without its extension)
   --source-root DIR   Preserve input parent folders relative to DIR
+  --no-image-optimization
+                      Skip pngquant and jpegoptim size optimization
   -h, --help          Show this help
   -V, --version       Show the version
 ";
@@ -34,6 +38,7 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), (u8, String)> {
     let mut inputs = Vec::new();
     let mut output = None;
     let mut source_root = None;
+    let mut optimize_images = true;
     let mut args = args.peekable();
 
     while let Some(arg) = args.next() {
@@ -62,6 +67,7 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), (u8, String)> {
                     return Err((2, "--source-root may only be specified once".to_owned()));
                 }
             }
+            Some("--no-image-optimization") => optimize_images = false,
             Some(value) if value.starts_with('-') => {
                 return Err((2, format!("unknown option: {value}")));
             }
@@ -85,9 +91,12 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), (u8, String)> {
         }
     };
 
+    let options = ConversionOptions { optimize_images };
     let summary = match source_root {
-        Some(source_root) => convert_files_with_hierarchy(&inputs, &source_root, &output),
-        None => convert_files(&inputs, &output),
+        Some(source_root) => {
+            convert_files_with_hierarchy_and_options(&inputs, &source_root, &output, options)
+        }
+        None => convert_files_with_options(&inputs, &output, options),
     }
     .map_err(|err| (1, err.to_string()))?;
     println!(
@@ -108,4 +117,15 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), (u8, String)> {
 
 fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_optimization_flag_is_recognized() {
+        let error = run([OsString::from("--no-image-optimization")].into_iter()).unwrap_err();
+        assert!(error.1.starts_with("missing input file"));
+    }
 }

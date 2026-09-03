@@ -8,7 +8,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from convert_onenote_backups import backup_identity, select_latest_backups, stage_backups
+from convert_onenote_backups import (
+    backup_identity,
+    converter_command,
+    select_latest_backups,
+    stage_backups,
+)
 
 
 class BackupSelectionTests(unittest.TestCase):
@@ -59,6 +64,17 @@ class BackupSelectionTests(unittest.TestCase):
 
             self.assertEqual(staged, [root / "staging" / "Notebook" / "Research.one"])
             self.assertEqual(staged[0].read_bytes(), b"section")
+
+    def test_image_optimization_flag_is_forwarded(self):
+        command = converter_command(
+            Path("/bin/one2md"),
+            [Path("/staging/Notebook/Research.one")],
+            Path("/staging"),
+            Path("/output"),
+            True,
+        )
+
+        self.assertEqual(command[-1], "--no-image-optimization")
 
 
 if __name__ == "__main__":
