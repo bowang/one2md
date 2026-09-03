@@ -483,9 +483,12 @@ struct Renderer<'a> {
     assets: &'a mut AssetWriter,
     pending_math_rows: Vec<String>,
     pending_math_compact_before: bool,
+    pending_math_depth: usize,
+    pending_math_indent_after_where: bool,
     pending_code_rows: Vec<PendingCodeRow>,
     pending_code_compact_before: bool,
     previous_outline_row_nonempty: bool,
+    ordered_list_next: Vec<Option<usize>>,
     in_references: bool,
 }
 
@@ -504,9 +507,12 @@ impl<'a> Renderer<'a> {
             assets,
             pending_math_rows: Vec::new(),
             pending_math_compact_before: false,
+            pending_math_depth: 0,
+            pending_math_indent_after_where: false,
             pending_code_rows: Vec::new(),
             pending_code_compact_before: false,
             previous_outline_row_nonempty: false,
+            ordered_list_next: Vec::new(),
             in_references: false,
         }
     }
@@ -566,9 +572,11 @@ impl<'a> Renderer<'a> {
 
     fn render_outline(&mut self, outline: &Outline) -> io::Result<()> {
         self.previous_outline_row_nonempty = false;
+        self.ordered_list_next.clear();
         self.render_outline_items(outline.items(), 0, false)?;
         self.flush_pending_math();
         self.previous_outline_row_nonempty = false;
+        self.ordered_list_next.clear();
         Ok(())
     }
 
@@ -620,6 +628,7 @@ impl<'a> Renderer<'a> {
                     .filter(|value| !value.contains('\n'));
 
                     if let Some(text) = fixed_width_line {
+                        self.end_ordered_lists_from(depth);
                         self.flush_pending_math();
                         if self.pending_code_rows.is_empty() {
                             self.pending_code_compact_before = compact_before;
@@ -640,17 +649,21 @@ impl<'a> Renderer<'a> {
                     self.flush_pending_code();
 
                     if let Some(heading) = section_heading {
+                        self.end_ordered_lists_from(depth);
                         self.flush_pending_math();
                         self.push_outline_heading(heading, compact_before);
                     } else if suppress_reference_image_bullet {
+                        self.end_ordered_lists_from(depth);
                         self.flush_pending_math();
                         self.prepare_reference_block(&block);
                         self.push_indented_block(&block, REFERENCE_IMAGE_INDENT);
                     } else if force_reference_text_bullet {
+                        self.end_ordered_lists_from(depth);
                         self.flush_pending_math();
                         self.prepare_reference_block(&block);
                         self.push_list_block(&block, depth, "- ");
                     } else if let Some(completed) = task {
+                        self.end_ordered_lists_from(depth);
                         self.flush_pending_math();
                         self.prepare_outline_block(&block, compact_before);
                         self.push_list_block(
@@ -661,21 +674,17 @@ impl<'a> Renderer<'a> {
                     } else if let Some(list) = list {
                         self.flush_pending_math();
                         self.prepare_outline_block(&block, compact_before);
+                        let list_depth = depth + usize::from(indent_after_where);
                         let marker = if list.list_format().contains(&'\u{fffd}') {
-                            match list.list_restart() {
-                                Some(start) if start > 1 => format!("{start}. "),
-                                _ => "1. ".to_owned(),
-                            }
+                            self.ordered_list_marker(list_depth, list.list_restart())
                         } else {
+                            self.end_ordered_lists_from(list_depth);
                             "- ".to_owned()
                         };
-                        self.push_list_block(
-                            &block,
-                            depth + usize::from(indent_after_where),
-                            &marker,
-                        );
+                        self.push_list_block(&block, list_depth, &marker);
                     } else {
-                        self.push_plain_block(&block, indent_after_where, compact_before);
+                        self.end_ordered_lists_from(depth);
+                        self.push_plain_block(&block, depth, indent_after_where, compact_before);
                     }
 
                     self.previous_outline_row_nonempty = !block.trim().is_empty();
@@ -843,49 +852,67 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    fn push_plain_block(&mut self, block: &str, indent: bool, compact_before: bool) {
+    fn push_plain_block(
+        &mut self,
+        block: &str,
+        depth: usize,
+        indent_after_where: bool,
+        compact_before: bool,
+    ) {
         if let Some(block) = format_multiline_equations(block) {
             self.flush_pending_math();
             self.prepare_outline_block(&block, compact_before);
-            if indent {
-                self.push_indented_block(&block, TAB_INDENT);
-            } else {
-                self.push_block(&block);
-            }
+            self.push_plain_output(&block, depth, indent_after_where);
             return;
         }
 
         let Some(latex) = standalone_math_latex(block) else {
             self.flush_pending_math();
             self.prepare_outline_block(block, compact_before);
-            if indent {
-                self.push_indented_block(block, TAB_INDENT);
-            } else {
-                self.push_block(block);
-            }
+            self.push_plain_output(block, depth, indent_after_where);
             return;
         };
 
-        if !self.pending_math_rows.is_empty() && !starts_with_math_relation(latex) {
+        if !self.pending_math_rows.is_empty()
+            && (!starts_with_math_relation(latex)
+                || depth != self.pending_math_depth
+                || indent_after_where != self.pending_math_indent_after_where)
+        {
             self.flush_pending_math();
         }
         if self.pending_math_rows.is_empty() {
             self.pending_math_compact_before = compact_before;
+            self.pending_math_depth = depth;
+            self.pending_math_indent_after_where = indent_after_where;
         }
         self.pending_math_rows.push(latex.to_owned());
+    }
+
+    fn push_plain_output(&mut self, block: &str, depth: usize, indent_after_where: bool) {
+        if depth > 0 {
+            let nested = format!("<br>{}", block.trim());
+            self.push_indented_block(&nested, &"    ".repeat(depth));
+        } else if indent_after_where {
+            self.push_indented_block(block, TAB_INDENT);
+        } else {
+            self.push_block(block);
+        }
     }
 
     fn flush_pending_math(&mut self) {
         let rows = std::mem::take(&mut self.pending_math_rows);
         let compact_before = std::mem::take(&mut self.pending_math_compact_before);
+        let depth = std::mem::take(&mut self.pending_math_depth);
+        let indent_after_where = std::mem::take(&mut self.pending_math_indent_after_where);
         match rows.as_slice() {
             [] => {}
             _ => {
                 self.compact_outline_gap(compact_before);
-                self.push_block(&format!(
-                    "$\\displaystyle\\qquad{}$",
-                    format_equation_array(&rows)
-                ));
+                self.push_plain_output(
+                    &format!("$\\displaystyle\\qquad{}$", format_equation_array(&rows)),
+                    depth,
+                    indent_after_where,
+                );
             }
         }
     }
@@ -927,7 +954,24 @@ impl<'a> Renderer<'a> {
     fn compact_outline_gap(&mut self, compact_before: bool) {
         if compact_before && self.markdown.ends_with("\n\n") {
             self.markdown.truncate(self.markdown.len() - 2);
-            self.markdown.push_str("  \n");
+            self.markdown.push('\n');
+        }
+    }
+
+    fn ordered_list_marker(&mut self, depth: usize, restart: Option<i32>) -> String {
+        self.ordered_list_next.truncate(depth + 1);
+        self.ordered_list_next.resize(depth + 1, None);
+        let restart = restart
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value > 0);
+        let number = restart.or(self.ordered_list_next[depth]).unwrap_or(1);
+        self.ordered_list_next[depth] = Some(number.saturating_add(1));
+        format!("{number}. ")
+    }
+
+    fn end_ordered_lists_from(&mut self, depth: usize) {
+        if depth < self.ordered_list_next.len() {
+            self.ordered_list_next.truncate(depth);
         }
     }
 
@@ -936,7 +980,7 @@ impl<'a> Renderer<'a> {
         if block.is_empty() {
             return;
         }
-        let indent = "  ".repeat(depth);
+        let indent = "    ".repeat(depth);
         let continuation = " ".repeat(marker.chars().count());
         for (index, line) in block.lines().enumerate() {
             self.markdown.push_str(&indent);
@@ -1307,7 +1351,7 @@ fn render_styled_text(raw: &str, style: RunStyle, in_table: bool) -> String {
 
 fn render_code_run(raw: &str, in_table: bool) -> String {
     let normalized = normalize_code_text(raw);
-    let separator = if in_table { "<br>" } else { "  \n" };
+    let separator = if in_table { "<br>" } else { "<br>\n" };
     normalized
         .split('\n')
         .map(|line| {
@@ -1694,30 +1738,38 @@ fn format_multiline_equations(block: &str) -> Option<String> {
     let mut index = 0;
 
     while index < lines.len() {
-        if standalone_math_latex(lines[index]).is_none() {
-            output.push(lines[index].to_owned());
+        let (line, _) = split_markdown_line_break(lines[index]);
+        if standalone_math_latex(line).is_none() {
+            output.push(lines[index].trim_end().to_owned());
             index += 1;
             continue;
         }
 
         found_equation = true;
         let mut rows = Vec::new();
-        let mut trailing_space = "";
+        let mut trailing_break = false;
         while index < lines.len() {
-            let Some(latex) = standalone_math_latex(lines[index]) else {
+            let (line, hard_break) = split_markdown_line_break(lines[index]);
+            let Some(latex) = standalone_math_latex(line) else {
                 break;
             };
             rows.push(latex.to_owned());
-            trailing_space = &lines[index][lines[index].trim_end().len()..];
+            trailing_break = hard_break;
             index += 1;
         }
         output.push(format!(
-            "$\\displaystyle\\qquad{}${trailing_space}",
-            format_equation_array(&rows)
+            "$\\displaystyle\\qquad{}${}",
+            format_equation_array(&rows),
+            if trailing_break { "<br>" } else { "" }
         ));
     }
 
     found_equation.then(|| output.join("\n"))
+}
+
+fn split_markdown_line_break(line: &str) -> (&str, bool) {
+    line.strip_suffix("<br>")
+        .map_or((line.trim_end(), false), |line| (line.trim_end(), true))
 }
 
 fn starts_with_math_relation(latex: &str) -> bool {
@@ -2150,8 +2202,12 @@ fn escape_markdown(value: &str, in_table: bool) -> String {
             }
             '|' if in_table => output.push_str("\\|"),
             '\r' => {}
-            '\n' | '\u{000b}' | '\u{000c}' if in_table => output.push_str("<br>"),
-            '\n' | '\u{000b}' | '\u{000c}' => output.push_str("  \n"),
+            '\n' | '\u{000b}' | '\u{000c}' => {
+                while matches!(output.as_bytes().last(), Some(b' ' | b'\t')) {
+                    output.pop();
+                }
+                output.push_str(if in_table { "<br>" } else { "<br>\n" });
+            }
             '\t' => output.push(' '),
             ch if ch.is_control() => {}
             _ => output.push(ch),

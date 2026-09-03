@@ -26,6 +26,10 @@ fn parse_math_fixture(raw: &str, descriptors: &[MathDescriptor]) -> String {
 fn markdown_escaping_preserves_text_and_table_cells() {
     assert_eq!(escape_markdown("a * b_[c]", false), "a \\* b\\_\\[c\\]");
     assert_eq!(escape_markdown("a|b\nc", true), "a\\|b<br>c");
+    assert_eq!(
+        escape_markdown("first  \nsecond", false),
+        "first<br>\nsecond"
+    );
 }
 
 #[test]
@@ -269,6 +273,64 @@ fn markdown_tables_keep_the_required_leading_blank_line() {
     assert_eq!(
         renderer.markdown,
         "The excess return is decomposed\n\n| Allocation | ${A}_{i}=1$ |\n| --- | --- |\n| Selection | ${S}_{i}=2$ |\n\n"
+    );
+}
+
+#[test]
+fn adjacent_ordered_items_use_incrementing_markers_without_trailing_spaces() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut assets = AssetWriter::new(
+        directory.path().join("_assets"),
+        "../_assets".to_owned(),
+        true,
+    );
+    let mut renderer = Renderer::new(&mut assets);
+
+    let first = renderer.ordered_list_marker(0, None);
+    renderer.push_list_block("First", 0, &first);
+    renderer.prepare_outline_block("Second", true);
+    let second = renderer.ordered_list_marker(0, None);
+    renderer.push_list_block("Second", 0, &second);
+
+    assert_eq!(renderer.markdown, "1. First\n2. Second\n\n");
+    assert!(
+        renderer
+            .markdown
+            .lines()
+            .all(|line| line.trim_end() == line)
+    );
+
+    assert_eq!(renderer.ordered_list_marker(1, None), "1. ");
+    assert_eq!(renderer.ordered_list_marker(1, None), "2. ");
+    assert_eq!(renderer.ordered_list_marker(0, None), "3. ");
+    assert_eq!(renderer.ordered_list_marker(1, None), "1. ");
+    renderer.end_ordered_lists_from(0);
+    assert_eq!(renderer.ordered_list_marker(0, None), "1. ");
+    assert_eq!(renderer.ordered_list_marker(0, Some(7)), "7. ");
+    assert_eq!(renderer.ordered_list_marker(0, None), "8. ");
+}
+
+#[test]
+fn nested_list_equations_remain_inside_their_parent_item() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut assets = AssetWriter::new(
+        directory.path().join("_assets"),
+        "../_assets".to_owned(),
+        true,
+    );
+    let mut renderer = Renderer::new(&mut assets);
+
+    renderer.push_list_block("Generate", 0, "1. ");
+    renderer.prepare_outline_block("Calculate", true);
+    renderer.push_list_block("Calculate", 2, "- ");
+    renderer.push_plain_block("$x=1$", 3, false, true);
+    renderer.flush_pending_math();
+    renderer.prepare_outline_block("Update", true);
+    renderer.push_list_block("Update", 0, "2. ");
+
+    assert_eq!(
+        renderer.markdown,
+        "1. Generate\n        - Calculate\n            <br>$\\displaystyle\\qquad\\begin{aligned}x&=1\\end{aligned}$\n2. Update\n\n"
     );
 }
 
@@ -524,9 +586,9 @@ fn mathematical_unicode_alphabet_maps_to_latex_symbols() {
 #[test]
 fn multiline_equation_rows_share_an_alignment_column() {
     assert_eq!(
-        format_multiline_equations("Variance  \n$x=1$  \n$=2$  \nafter"),
+        format_multiline_equations("Variance<br>\n$x=1$<br>\n$=2$<br>\nafter"),
         Some(
-            "Variance  \n$\\displaystyle\\qquad\\begin{aligned}x&=1 \\\\ &=2\\end{aligned}$  \nafter"
+            "Variance<br>\n$\\displaystyle\\qquad\\begin{aligned}x&=1 \\\\ &=2\\end{aligned}$<br>\nafter"
                 .to_owned()
         )
     );
