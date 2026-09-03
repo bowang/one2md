@@ -29,6 +29,100 @@ fn markdown_escaping_preserves_text_and_table_cells() {
 }
 
 #[test]
+fn recognizes_common_fixed_width_fonts_without_matching_proportional_fonts() {
+    for font in [
+        "Consolas",
+        "Courier New",
+        "Menlo",
+        "Cascadia Code",
+        "Aptos Mono",
+        "SFMono-Regular",
+    ] {
+        assert!(
+            is_fixed_width_font(font),
+            "expected {font} to be fixed-width"
+        );
+    }
+    for font in ["Arial", "Calibri", "Cambria Math", "Monotype Corsiva"] {
+        assert!(
+            !is_fixed_width_font(font),
+            "expected {font} to be proportional"
+        );
+    }
+}
+
+#[test]
+fn fixed_width_runs_become_safe_markdown_code_spans() {
+    let style = RunStyle {
+        fixed_width: true,
+        ..RunStyle::default()
+    };
+    assert_eq!(render_styled_text("a_b * c", style, false), "`a_b * c`");
+    assert_eq!(
+        render_styled_text("`quoted`", style, false),
+        "`` `quoted` ``"
+    );
+    assert_eq!(
+        render_styled_text("left|right", style, true),
+        "`left|right`"
+    );
+}
+
+#[test]
+fn adjacent_fixed_width_runs_share_one_code_span() {
+    let style = RunStyle {
+        fixed_width: true,
+        ..RunStyle::default()
+    };
+    let mut output = String::new();
+    let mut pending = None;
+    for run in ["awk", "\u{00a0}", "'{print", "\u{00a0}", "$2}"] {
+        push_fixed_width(&mut output, &mut pending, run, style, false);
+    }
+    flush_fixed_width(&mut output, &mut pending, false);
+
+    assert_eq!(output, "`awk\u{00a0}'{print\u{00a0}$2}`");
+    assert!(!output.contains("``"));
+}
+
+#[test]
+fn multiline_fixed_width_text_uses_a_collision_safe_code_fence() {
+    assert_eq!(
+        fenced_code_block("fn main() {\n\tprintln!(\"ok\");\n}"),
+        "```\nfn main() {\n\tprintln!(\"ok\");\n}\n```"
+    );
+    assert_eq!(
+        fenced_code_block("before\n```\nafter"),
+        "````\nbefore\n```\nafter\n````"
+    );
+    assert_eq!(normalize_code_text("a\r\nb\u{000b}c"), "a\nb\nc");
+}
+
+#[test]
+fn consecutive_fixed_width_rows_are_merged_into_one_code_block() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut assets = AssetWriter::new(directory.path().join("_assets"), "../_assets".to_owned());
+    let mut renderer = Renderer::new(&mut assets);
+    renderer.pending_code_rows = vec![
+        PendingCodeRow {
+            text: "def answer():".to_owned(),
+            rendered: "`def answer():`".to_owned(),
+        },
+        PendingCodeRow {
+            text: "    return 42".to_owned(),
+            rendered: "`    return 42`".to_owned(),
+        },
+    ];
+
+    renderer.flush_pending_code();
+
+    assert_eq!(
+        renderer.markdown,
+        "```\ndef answer():\n    return 42\n```\n\n"
+    );
+}
+
+#[test]
 fn tiff_payloads_are_detected_and_converted_to_png() {
     use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
     use std::io::Cursor;

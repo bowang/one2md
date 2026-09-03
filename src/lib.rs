@@ -422,8 +422,15 @@ struct Renderer<'a> {
     assets: &'a mut AssetWriter,
     pending_math_rows: Vec<String>,
     pending_math_compact_before: bool,
+    pending_code_rows: Vec<PendingCodeRow>,
+    pending_code_compact_before: bool,
     previous_outline_row_nonempty: bool,
     in_references: bool,
+}
+
+struct PendingCodeRow {
+    text: String,
+    rendered: String,
 }
 
 const TAB_INDENT: &str = "\u{2003}\u{2003}";
@@ -436,6 +443,8 @@ impl<'a> Renderer<'a> {
             assets,
             pending_math_rows: Vec::new(),
             pending_math_compact_before: false,
+            pending_code_rows: Vec::new(),
+            pending_code_compact_before: false,
             previous_outline_row_nonempty: false,
             in_references: false,
         }
@@ -511,6 +520,7 @@ impl<'a> Renderer<'a> {
         for item in items {
             match item {
                 OutlineItem::Group(group) => {
+                    self.flush_pending_code();
                     let group_depth = group.child_level().saturating_sub(1) as usize;
                     self.render_outline_items(
                         group.outlines(),
@@ -539,6 +549,34 @@ impl<'a> Renderer<'a> {
                         && (force_reference_text_bullet
                             || (!suppress_reference_image_bullet
                                 && (task.is_some() || list.is_some())));
+                    let fixed_width_line = (!self.in_references
+                        && !indent_after_where
+                        && section_heading.is_none()
+                        && task.is_none()
+                        && list.is_none())
+                    .then(|| outline_element_fixed_width_text(element))
+                    .flatten()
+                    .filter(|value| !value.contains('\n'));
+
+                    if let Some(text) = fixed_width_line {
+                        self.flush_pending_math();
+                        if self.pending_code_rows.is_empty() {
+                            self.pending_code_compact_before = compact_before;
+                        }
+                        self.pending_code_rows.push(PendingCodeRow {
+                            text,
+                            rendered: block.clone(),
+                        });
+                        self.previous_outline_row_nonempty = !block.trim().is_empty();
+
+                        if !element.children().is_empty() {
+                            self.flush_pending_code();
+                            self.render_outline_items(element.children(), depth, false)?;
+                        }
+                        continue;
+                    }
+
+                    self.flush_pending_code();
 
                     if let Some(heading) = section_heading {
                         self.flush_pending_math();
@@ -593,6 +631,7 @@ impl<'a> Renderer<'a> {
                 }
             }
         }
+        self.flush_pending_code();
         Ok(())
     }
 
@@ -790,6 +829,24 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    fn flush_pending_code(&mut self) {
+        let rows = std::mem::take(&mut self.pending_code_rows);
+        let compact_before = std::mem::take(&mut self.pending_code_compact_before);
+        let block = match rows.as_slice() {
+            [] => return,
+            [row] => row.rendered.clone(),
+            rows => fenced_code_block(
+                &rows
+                    .iter()
+                    .map(|row| row.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        };
+        self.prepare_outline_block(&block, compact_before);
+        self.push_block(&block);
+    }
+
     fn prepare_outline_block(&mut self, block: &str, compact_before: bool) {
         if !block.trim().is_empty() {
             // A Markdown table must start a new block. Turning the preceding
@@ -859,6 +916,13 @@ fn outline_section_heading(element: &OutlineElement) -> Option<&'static str> {
     }
 }
 
+fn outline_element_fixed_width_text(element: &OutlineElement) -> Option<String> {
+    let [Content::RichText(text)] = element.contents() else {
+        return None;
+    };
+    fixed_width_text(text)
+}
+
 fn task_state(element: &OutlineElement) -> Option<bool> {
     element.contents().iter().find_map(|content| match content {
         Content::RichText(text) => text
@@ -875,7 +939,7 @@ fn task_state(element: &OutlineElement) -> Option<bool> {
     })
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
 struct RunStyle {
     bold: bool,
     italic: bool,
@@ -885,6 +949,7 @@ struct RunStyle {
     subscript: bool,
     colored: bool,
     hidden: bool,
+    fixed_width: bool,
 }
 
 impl From<&ParagraphStyling> for RunStyle {
@@ -901,11 +966,16 @@ impl From<&ParagraphStyling> for RunStyle {
                 Some(ColorRef::Manual { r, g, b }) if (r, g, b) != (0, 0, 0)
             ),
             hidden: style.hidden(),
+            fixed_width: style.font().is_some_and(is_fixed_width_font),
         }
     }
 }
 
 fn render_rich_text(text: &RichText, in_table: bool, linkify_bare_urls: bool) -> String {
+    if !in_table && let Some(block) = render_fixed_width_block(text) {
+        return block;
+    }
+
     let units: Vec<u16> = text.text().encode_utf16().collect();
     if units.is_empty() {
         return String::new();
@@ -941,6 +1011,7 @@ fn render_rich_text(text: &RichText, in_table: bool, linkify_bare_urls: bool) ->
         .collect();
     let mut output = String::new();
     let mut math = Vec::new();
+    let mut fixed_width = None;
 
     for pair in boundaries.windows(2) {
         let start = pair[0];
@@ -957,14 +1028,16 @@ fn render_rich_text(text: &RichText, in_table: bool, linkify_bare_urls: bool) ->
         let style_data = run_index
             .and_then(|index| run_styles.get(index))
             .unwrap_or(paragraph_style);
-        let style = RunStyle::from(style_data);
+        let style = effective_run_style(style_data, paragraph_style);
         if style.hidden {
             flush_math(&mut output, &mut math);
+            flush_fixed_width(&mut output, &mut fixed_width, in_table);
             continue;
         }
 
         let raw = String::from_utf16_lossy(&units[start as usize..stop as usize]);
         if style_data.math_formatting() {
+            flush_fixed_width(&mut output, &mut fixed_width, in_table);
             let run_start = run_index
                 .and_then(|index| index.checked_sub(1))
                 .and_then(|index| run_ends.get(index))
@@ -989,38 +1062,72 @@ fn render_rich_text(text: &RichText, in_table: bool, linkify_bare_urls: bool) ->
 
         flush_math(&mut output, &mut math);
         let raw = remove_control_markers(&raw);
-        let linked = hyperlinks
+        if let Some(link) = hyperlinks
             .iter()
             .find(|link| start >= link.start() && stop <= link.end())
-            .map_or_else(
-                || render_text_run(&raw, style, in_table, linkify_bare_urls),
-                |link| {
-                    let escaped = escape_markdown(&raw, in_table);
-                    let styled = apply_style(&escaped, style);
-                    if is_onenote_link(link.target()) {
-                        styled
-                    } else {
-                        format!("[{styled}](<{}>)", escape_link_target(link.target()))
-                    }
-                },
-            );
-        output.push_str(&linked);
+        {
+            flush_fixed_width(&mut output, &mut fixed_width, in_table);
+            let styled = render_styled_text(&raw, style, in_table);
+            if is_onenote_link(link.target()) {
+                output.push_str(&styled);
+            } else {
+                output.push_str(&format!(
+                    "[{styled}](<{}>)",
+                    escape_link_target(link.target())
+                ));
+            }
+        } else if style.fixed_width {
+            push_fixed_width(&mut output, &mut fixed_width, &raw, style, in_table);
+        } else {
+            flush_fixed_width(&mut output, &mut fixed_width, in_table);
+            output.push_str(&render_text_run(&raw, style, in_table, linkify_bare_urls));
+        }
     }
 
     flush_math(&mut output, &mut math);
+    flush_fixed_width(&mut output, &mut fixed_width, in_table);
     output
 }
 
+fn push_fixed_width(
+    output: &mut String,
+    pending: &mut Option<(String, RunStyle)>,
+    raw: &str,
+    style: RunStyle,
+    in_table: bool,
+) {
+    if pending
+        .as_ref()
+        .is_some_and(|(_, pending_style)| *pending_style != style)
+    {
+        flush_fixed_width(output, pending, in_table);
+    }
+    match pending {
+        Some((value, _)) => value.push_str(raw),
+        None => *pending = Some((raw.to_owned(), style)),
+    }
+}
+
+fn flush_fixed_width(
+    output: &mut String,
+    pending: &mut Option<(String, RunStyle)>,
+    in_table: bool,
+) {
+    if let Some((raw, style)) = pending.take() {
+        output.push_str(&render_styled_text(&raw, style, in_table));
+    }
+}
+
 fn render_text_run(raw: &str, style: RunStyle, in_table: bool, linkify: bool) -> String {
-    if !linkify {
-        return apply_style(&escape_markdown(raw, in_table), style);
+    if !linkify || style.fixed_width {
+        return render_styled_text(raw, style, in_table);
     }
 
     let mut output = String::new();
     let mut remaining = raw;
     while let Some(start) = next_web_url_start(remaining) {
         let (before, url_and_after) = remaining.split_at(start);
-        output.push_str(&apply_style(&escape_markdown(before, in_table), style));
+        output.push_str(&render_styled_text(before, style, in_table));
 
         let whitespace = url_and_after
             .find(char::is_whitespace)
@@ -1028,11 +1135,181 @@ fn render_text_run(raw: &str, style: RunStyle, in_table: bool, linkify: bool) ->
         let candidate = &url_and_after[..whitespace];
         let url_len = bare_url_len(candidate);
         let (url, after_url) = url_and_after.split_at(url_len);
-        let label = apply_style(&escape_markdown(url, in_table), style);
+        let label = render_styled_text(url, style, in_table);
         output.push_str(&format!("[{label}](<{}>)", escape_link_target(url)));
         remaining = after_url;
     }
-    output.push_str(&apply_style(&escape_markdown(remaining, in_table), style));
+    output.push_str(&render_styled_text(remaining, style, in_table));
+    output
+}
+
+fn effective_run_style(style: &ParagraphStyling, paragraph: &ParagraphStyling) -> RunStyle {
+    let mut result = RunStyle::from(style);
+    result.fixed_width = style
+        .font()
+        .or_else(|| paragraph.font())
+        .is_some_and(is_fixed_width_font);
+    result
+}
+
+fn is_fixed_width_font(font: &str) -> bool {
+    let normalized = font.to_ascii_lowercase().replace(['-', '_'], " ");
+    normalized
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|part| matches!(part, "mono" | "monospace"))
+        || [
+            "andale mono",
+            "cascadia code",
+            "consolas",
+            "courier",
+            "fixedsys",
+            "jetbrains mono",
+            "lucida console",
+            "lucida sans typewriter",
+            "menlo",
+            "monaco",
+            "sfmono",
+            "source code pro",
+        ]
+        .iter()
+        .any(|name| normalized.contains(name))
+}
+
+fn render_fixed_width_block(text: &RichText) -> Option<String> {
+    let visible = fixed_width_text(text)?;
+    let content_lines = visible
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    (content_lines > 1).then(|| fenced_code_block(&visible))
+}
+
+fn fixed_width_text(text: &RichText) -> Option<String> {
+    let units = text.text().encode_utf16().collect::<Vec<_>>();
+    if units.is_empty() {
+        return None;
+    }
+
+    let end = units.len() as u32;
+    let run_ends = text.text_run_indices();
+    let run_styles = text.text_run_formatting();
+    let paragraph_style = text.paragraph_style();
+    let mut boundaries = vec![0, end];
+    boundaries.extend(run_ends.iter().copied().map(|value| value.min(end)));
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    let mut visible = String::new();
+    let mut has_fixed_width_style = false;
+    for pair in boundaries.windows(2) {
+        let start = pair[0];
+        let stop = pair[1];
+        if stop <= start {
+            continue;
+        }
+
+        let run_index = run_ends
+            .iter()
+            .position(|run_end| start < *run_end)
+            .or_else(|| (!run_styles.is_empty()).then_some(run_styles.len() - 1));
+        let style_data = run_index
+            .and_then(|index| run_styles.get(index))
+            .unwrap_or(paragraph_style);
+        let style = effective_run_style(style_data, paragraph_style);
+        if style.hidden {
+            continue;
+        }
+
+        let raw = remove_control_markers(&String::from_utf16_lossy(
+            &units[start as usize..stop as usize],
+        ));
+        has_fixed_width_style |= style.fixed_width && !raw.is_empty();
+        if raw.chars().any(|ch| !ch.is_whitespace())
+            && (style_data.math_formatting() || !style.fixed_width)
+        {
+            return None;
+        }
+        visible.push_str(&raw);
+    }
+
+    has_fixed_width_style.then(|| normalize_code_text(&visible))
+}
+
+fn render_styled_text(raw: &str, style: RunStyle, in_table: bool) -> String {
+    let value = if style.fixed_width {
+        render_code_run(raw, in_table)
+    } else {
+        escape_markdown(raw, in_table)
+    };
+    apply_style(&value, style)
+}
+
+fn render_code_run(raw: &str, in_table: bool) -> String {
+    let normalized = normalize_code_text(raw);
+    let separator = if in_table { "<br>" } else { "  \n" };
+    normalized
+        .split('\n')
+        .map(|line| {
+            if line.is_empty() {
+                String::new()
+            } else {
+                inline_code_span(line)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
+fn inline_code_span(value: &str) -> String {
+    let delimiter = "`".repeat(longest_backtick_run(value).saturating_add(1).max(1));
+    let padding = if value.starts_with('`')
+        || value.ends_with('`')
+        || (value.starts_with(' ') && value.ends_with(' ') && !value.trim().is_empty())
+    {
+        " "
+    } else {
+        ""
+    };
+    format!("{delimiter}{padding}{value}{padding}{delimiter}")
+}
+
+fn fenced_code_block(value: &str) -> String {
+    let fence = "`".repeat(longest_backtick_run(value).saturating_add(1).max(3));
+    let closing_newline = if value.ends_with('\n') { "" } else { "\n" };
+    format!("{fence}\n{value}{closing_newline}{fence}")
+}
+
+fn longest_backtick_run(value: &str) -> usize {
+    let mut longest = 0;
+    let mut current = 0;
+    for ch in value.chars() {
+        if ch == '`' {
+            current += 1;
+            longest = longest.max(current);
+        } else {
+            current = 0;
+        }
+    }
+    longest
+}
+
+fn normalize_code_text(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                output.push('\n');
+            }
+            '\n' | '\u{000b}' | '\u{000c}' => output.push('\n'),
+            '\t' => output.push('\t'),
+            ch if ch.is_control() => {}
+            _ => output.push(ch),
+        }
+    }
     output
 }
 
