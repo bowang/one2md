@@ -110,7 +110,8 @@ fn consecutive_fixed_width_rows_are_merged_into_one_code_block() {
         "../_assets".to_owned(),
         true,
     );
-    let mut renderer = Renderer::new(&mut assets);
+    let page_links = HashMap::new();
+    let mut renderer = Renderer::new(&mut assets, &page_links, Path::new("Page.md"));
     renderer.pending_code_rows = vec![
         PendingCodeRow {
             text: "def answer():".to_owned(),
@@ -261,7 +262,8 @@ fn markdown_tables_keep_the_required_leading_blank_line() {
         "../_assets".to_owned(),
         true,
     );
-    let mut renderer = Renderer::new(&mut assets);
+    let page_links = HashMap::new();
+    let mut renderer = Renderer::new(&mut assets, &page_links, Path::new("Page.md"));
     let table = "| Allocation | ${A}_{i}=1$ |\n| --- | --- |\n| Selection | ${S}_{i}=2$ |";
 
     renderer
@@ -284,7 +286,8 @@ fn adjacent_ordered_items_use_incrementing_markers_without_trailing_spaces() {
         "../_assets".to_owned(),
         true,
     );
-    let mut renderer = Renderer::new(&mut assets);
+    let page_links = HashMap::new();
+    let mut renderer = Renderer::new(&mut assets, &page_links, Path::new("Page.md"));
 
     let first = renderer.ordered_list_marker(0, None);
     renderer.push_list_block("First", 0, &first);
@@ -318,7 +321,8 @@ fn nested_list_equations_remain_inside_their_parent_item() {
         "../_assets".to_owned(),
         true,
     );
-    let mut renderer = Renderer::new(&mut assets);
+    let page_links = HashMap::new();
+    let mut renderer = Renderer::new(&mut assets, &page_links, Path::new("Page.md"));
 
     renderer.push_list_block("Generate", 0, "1. ");
     renderer.prepare_outline_block("Calculate", true);
@@ -461,6 +465,48 @@ fn links_are_url_encoded() {
             true,
         ),
         "See [https://example.com/a\\_b\\_(c)](<https://example.com/a_b_(c)>)."
+    );
+}
+
+#[test]
+fn onenote_page_links_resolve_to_relative_markdown_paths() {
+    assert_eq!(
+        onenote_page_id("onenote:#Page&section-id={section}&page-id=%7BABC-123%7D&end"),
+        Some("abc-123".to_owned())
+    );
+    let page_links = HashMap::from([
+        (
+            "abc-123".to_owned(),
+            PathBuf::from("Notebook/Section/Law of total probability.md"),
+        ),
+        (
+            "def-456".to_owned(),
+            PathBuf::from("Notebook/Other/Target.md"),
+        ),
+    ]);
+    assert_eq!(
+        resolve_onenote_link(
+            "onenote:#Page&page-id={ABC-123}",
+            Path::new("Notebook/Section/Source.md"),
+            &page_links,
+        ),
+        Some("Law%20of%20total%20probability.md".to_owned())
+    );
+    assert_eq!(
+        resolve_onenote_link(
+            "ONENOTE:#Target&PAGE-ID={DEF-456}",
+            Path::new("Notebook/Section/Source.md"),
+            &page_links,
+        ),
+        Some("../Other/Target.md".to_owned())
+    );
+    assert_eq!(
+        resolve_onenote_link(
+            "onenote:#Missing&page-id={missing}",
+            Path::new("Notebook/Section/Source.md"),
+            &page_links,
+        ),
+        None
     );
 }
 
@@ -691,9 +737,11 @@ fn gm_fixture_converts_equations_end_to_end() {
     );
     assert!(markdown.contains("## References\n- [Machine Learning: Variational Inference]"));
     assert!(!markdown.contains("## References\n\n"));
-    assert!(markdown.contains("## See Also\n- Law of total probability"));
+    assert!(markdown.contains(
+        "## See Also\n- [Law of total probability](<Law%20of%20total%20probability.md>)"
+    ));
     assert!(!markdown.contains("## See Also\n\n"));
-    assert!(markdown.contains("See also: Thompson sampling"));
+    assert!(markdown.contains("See also: [Thompson sampling](<Thompson%20sampling.md>)"));
     assert!(markdown.contains("- [Attachment: 19a.pdf](../_assets/19a.pdf)"));
     assert!(!variational_references.contains("![]("));
     assert!(!variational_references.contains("\n\n"));

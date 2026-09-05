@@ -8,7 +8,7 @@ use onenote_parser::page::{Page, PageContent};
 use onenote_parser::property::common::ColorRef;
 use onenote_parser::section::{Section, SectionEntry};
 use onenote_parser::warn::Report;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs;
@@ -136,7 +136,7 @@ where
     let skip_malformed_inputs = inputs.len() > 1;
 
     let parser = Parser::new();
-    let mut renderer = FolderRenderer::new(output, options.optimize_images)?;
+    let mut parsed_inputs = Vec::new();
     let mut warnings = Vec::new();
 
     for input in inputs {
@@ -176,7 +176,7 @@ where
                     Err(error) => return Err(error.into()),
                 };
                 collect_report(section.report(), &mut warnings);
-                renderer.render_section_at(&section, &relative_parent)?;
+                parsed_inputs.push(ParsedInput::Section(section, relative_parent));
             }
             "onetoc2" => {
                 let notebook = match parser.parse_notebook(as_typed_path(input)?) {
@@ -191,7 +191,7 @@ where
                     Err(error) => return Err(error.into()),
                 };
                 collect_notebook_warnings(&notebook, &mut warnings);
-                renderer.render_notebook_at(&notebook, &relative_parent)?;
+                parsed_inputs.push(ParsedInput::Notebook(notebook, relative_parent));
             }
             "onepkg" => {
                 let notebook = match parser.parse_package(as_typed_path(input)?) {
@@ -206,7 +206,7 @@ where
                     Err(error) => return Err(error.into()),
                 };
                 collect_notebook_warnings(&notebook, &mut warnings);
-                renderer.render_notebook_at(&notebook, &relative_parent)?;
+                parsed_inputs.push(ParsedInput::Notebook(notebook, relative_parent));
             }
             _ => {
                 return Err(format!(
@@ -218,12 +218,20 @@ where
         }
     }
 
+    let mut renderer = FolderRenderer::new(output, options.optimize_images)?;
+    renderer.render_inputs(&parsed_inputs)?;
+
     Ok(ConversionSummary {
         pages: renderer.pages,
         assets: renderer.assets.count,
         warnings,
         output: output.to_owned(),
     })
+}
+
+enum ParsedInput {
+    Section(Section, PathBuf),
+    Notebook(Notebook, PathBuf),
 }
 
 fn protect_input_from_overwrite(input: &Path, output: &Path) -> io::Result<()> {
@@ -288,8 +296,21 @@ fn collect_report(report: &Report, warnings: &mut Vec<String>) {
 struct FolderRenderer {
     root: PathBuf,
     sections: HashSet<String>,
+    page_links: HashMap<String, PathBuf>,
     pages: usize,
     assets: AssetWriter,
+}
+
+struct SectionPlan<'a> {
+    title: &'a str,
+    directory: PathBuf,
+    pages: Vec<PagePlan<'a>>,
+}
+
+struct PagePlan<'a> {
+    page: &'a Page,
+    title: String,
+    filename: String,
 }
 
 struct PageIndexEntry {
@@ -304,6 +325,7 @@ impl FolderRenderer {
         Ok(Self {
             root: root.to_owned(),
             sections: HashSet::new(),
+            page_links: HashMap::new(),
             pages: 0,
             assets: AssetWriter::new(
                 root.join("_assets"),
@@ -313,23 +335,41 @@ impl FolderRenderer {
         })
     }
 
-    fn render_notebook_at(&mut self, notebook: &Notebook, parent: &Path) -> io::Result<()> {
-        self.render_entries_at(notebook.entries(), parent)
-    }
-
-    fn render_entries_at(&mut self, entries: &[SectionEntry], parent: &Path) -> io::Result<()> {
-        for entry in entries {
-            match entry {
-                SectionEntry::Section(section) => self.render_section_at(section, parent)?,
-                SectionEntry::SectionGroup(group) => {
-                    self.render_entries_at(group.entries(), parent)?
+    fn render_inputs(&mut self, inputs: &[ParsedInput]) -> io::Result<()> {
+        let mut plans = Vec::new();
+        for input in inputs {
+            match input {
+                ParsedInput::Section(section, parent) => {
+                    plans.push(self.plan_section_at(section, parent));
+                }
+                ParsedInput::Notebook(notebook, parent) => {
+                    self.plan_entries_at(notebook.entries(), parent, &mut plans);
                 }
             }
+        }
+        for plan in plans {
+            self.render_section(plan)?;
         }
         Ok(())
     }
 
-    fn render_section_at(&mut self, section: &Section, parent: &Path) -> io::Result<()> {
+    fn plan_entries_at<'a>(
+        &mut self,
+        entries: &'a [SectionEntry],
+        parent: &Path,
+        plans: &mut Vec<SectionPlan<'a>>,
+    ) {
+        for entry in entries {
+            match entry {
+                SectionEntry::Section(section) => plans.push(self.plan_section_at(section, parent)),
+                SectionEntry::SectionGroup(group) => {
+                    self.plan_entries_at(group.entries(), parent, plans)
+                }
+            }
+        }
+    }
+
+    fn plan_section_at<'a>(&mut self, section: &'a Section, parent: &Path) -> SectionPlan<'a> {
         let preferred = safe_title_component(section.display_name());
         let preferred = if preferred.is_empty() {
             "Untitled section".to_owned()
@@ -337,34 +377,58 @@ impl FolderRenderer {
             preferred
         };
         let section_name = unique_section_name(preferred, parent, &mut self.sections);
-        let section_dir = self.root.join(parent).join(section_name);
-        fs::create_dir_all(&section_dir)?;
-        self.assets.relative_directory = format!(
-            "{}_assets",
-            "../".repeat(parent.components().count().saturating_add(1))
-        );
+        let directory = parent.join(section_name);
         let mut page_names = HashSet::from(["_index.md".to_owned()]);
-        let mut index_entries = Vec::new();
+        let mut pages = Vec::new();
 
         for series in section.page_series() {
             for page in series.pages() {
                 self.pages += 1;
                 let title = page_title(page, self.pages);
                 let preferred = markdown_filename(&title);
-                let page_name = unique_generated_name(preferred, &mut page_names);
-                let page_path = section_dir.join(&page_name);
-                let mut renderer = Renderer::new(&mut self.assets);
-                renderer.render_page(page, &title)?;
-                fs::write(&page_path, renderer.markdown.as_bytes())?;
-                index_entries.push(PageIndexEntry {
+                let filename = unique_generated_name(preferred, &mut page_names);
+                self.page_links.insert(
+                    normalize_page_id(page.link_target_id()),
+                    directory.join(&filename),
+                );
+                pages.push(PagePlan {
+                    page,
                     title,
-                    filename: page_name,
-                    level: page.level(),
+                    filename,
                 });
             }
         }
 
-        let index = render_section_index(section.display_name(), &index_entries);
+        SectionPlan {
+            title: section.display_name(),
+            directory,
+            pages,
+        }
+    }
+
+    fn render_section(&mut self, plan: SectionPlan<'_>) -> io::Result<()> {
+        let section_dir = self.root.join(&plan.directory);
+        fs::create_dir_all(&section_dir)?;
+        self.assets.relative_directory = format!(
+            "{}_assets",
+            "../".repeat(plan.directory.components().count())
+        );
+        let mut index_entries = Vec::new();
+
+        for planned_page in plan.pages {
+            let relative_path = plan.directory.join(&planned_page.filename);
+            let page_path = self.root.join(&relative_path);
+            let mut renderer = Renderer::new(&mut self.assets, &self.page_links, &relative_path);
+            renderer.render_page(planned_page.page, &planned_page.title)?;
+            fs::write(&page_path, renderer.markdown.as_bytes())?;
+            index_entries.push(PageIndexEntry {
+                title: planned_page.title,
+                filename: planned_page.filename,
+                level: planned_page.page.level(),
+            });
+        }
+
+        let index = render_section_index(plan.title, &index_entries);
         fs::write(section_dir.join("_index.md"), index.as_bytes())?;
 
         Ok(())
@@ -481,6 +545,8 @@ fn unique_generated_name(preferred: String, used: &mut HashSet<String>) -> Strin
 struct Renderer<'a> {
     markdown: String,
     assets: &'a mut AssetWriter,
+    page_links: &'a HashMap<String, PathBuf>,
+    current_page: &'a Path,
     pending_math_rows: Vec<String>,
     pending_math_compact_before: bool,
     pending_math_depth: usize,
@@ -501,10 +567,16 @@ const TAB_INDENT: &str = "\u{2003}\u{2003}";
 const REFERENCE_IMAGE_INDENT: &str = "\u{2003}";
 
 impl<'a> Renderer<'a> {
-    fn new(assets: &'a mut AssetWriter) -> Self {
+    fn new(
+        assets: &'a mut AssetWriter,
+        page_links: &'a HashMap<String, PathBuf>,
+        current_page: &'a Path,
+    ) -> Self {
         Self {
             markdown: String::new(),
             assets,
+            page_links,
+            current_page,
             pending_math_rows: Vec::new(),
             pending_math_compact_before: false,
             pending_math_depth: 0,
@@ -709,7 +781,13 @@ impl<'a> Renderer<'a> {
         let mut blocks = Vec::new();
         for content in element.contents() {
             let block = match content {
-                Content::RichText(text) => render_rich_text(text, false, self.in_references),
+                Content::RichText(text) => render_rich_text(
+                    text,
+                    false,
+                    self.in_references,
+                    self.page_links,
+                    self.current_page,
+                ),
                 Content::Table(table) => self.render_table(table)?,
                 Content::Image(_) if self.in_references => String::new(),
                 Content::Image(image) => self.render_image(image)?,
@@ -786,11 +864,20 @@ impl<'a> Renderer<'a> {
         let image_markdown = format!("![]({path})");
 
         Ok(match image.hyperlink_url() {
-            Some(target) if !is_onenote_link(target) => {
+            Some(target) if is_onenote_link(target) => self
+                .resolve_onenote_link(target)
+                .map_or(image_markdown.clone(), |target| {
+                    format!("[{image_markdown}](<{target}>)")
+                }),
+            Some(target) => {
                 format!("[{image_markdown}](<{}>)", escape_link_target(target))
             }
-            _ => image_markdown,
+            None => image_markdown,
         })
+    }
+
+    fn resolve_onenote_link(&self, target: &str) -> Option<String> {
+        resolve_onenote_link(target, self.current_page, self.page_links)
     }
 
     fn render_embedded_file(&mut self, file: &EmbeddedFile) -> io::Result<String> {
@@ -1076,7 +1163,13 @@ impl From<&ParagraphStyling> for RunStyle {
     }
 }
 
-fn render_rich_text(text: &RichText, in_table: bool, linkify_bare_urls: bool) -> String {
+fn render_rich_text(
+    text: &RichText,
+    in_table: bool,
+    linkify_bare_urls: bool,
+    page_links: &HashMap<String, PathBuf>,
+    current_page: &Path,
+) -> String {
     if !in_table && let Some(block) = render_fixed_width_block(text) {
         return block;
     }
@@ -1174,7 +1267,10 @@ fn render_rich_text(text: &RichText, in_table: bool, linkify_bare_urls: bool) ->
             flush_fixed_width(&mut output, &mut fixed_width, in_table);
             let styled = render_styled_text(&raw, style, in_table);
             if is_onenote_link(link.target()) {
-                output.push_str(&styled);
+                match resolve_onenote_link(link.target(), current_page, page_links) {
+                    Some(target) => output.push_str(&format!("[{styled}](<{target}>)")),
+                    None => output.push_str(&styled),
+                }
             } else {
                 output.push_str(&format!(
                     "[{styled}](<{}>)",
@@ -1430,6 +1526,82 @@ fn is_onenote_link(value: &str) -> bool {
         .trim_start()
         .get(..8)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("onenote:"))
+}
+
+fn resolve_onenote_link(
+    target: &str,
+    current_page: &Path,
+    page_links: &HashMap<String, PathBuf>,
+) -> Option<String> {
+    let page_id = onenote_page_id(target)?;
+    let target_page = page_links.get(&page_id)?;
+    Some(escape_link_target(&relative_markdown_path(
+        current_page,
+        target_page,
+    )))
+}
+
+fn onenote_page_id(value: &str) -> Option<String> {
+    if !is_onenote_link(value) {
+        return None;
+    }
+    let lowercase = value.to_ascii_lowercase();
+    let start = lowercase.find("page-id=")? + "page-id=".len();
+    let raw = value[start..]
+        .split(|ch: char| ch == '&' || ch == '#' || ch.is_whitespace())
+        .next()?;
+    let decoded = percent_decode_ascii(raw)?;
+    let normalized = normalize_page_id(&decoded);
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn normalize_page_id(value: &str) -> String {
+    value.trim().trim_matches(['{', '}']).to_ascii_lowercase()
+}
+
+fn percent_decode_ascii(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = hex_value(*bytes.get(index + 1)?)?;
+            let low = hex_value(*bytes.get(index + 2)?)?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn relative_markdown_path(current_page: &Path, target_page: &Path) -> String {
+    let current_directory = current_page.parent().unwrap_or_else(|| Path::new(""));
+    let current = current_directory.components().collect::<Vec<_>>();
+    let target = target_page.components().collect::<Vec<_>>();
+    let common = current
+        .iter()
+        .zip(&target)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut parts = vec!["..".to_owned(); current.len().saturating_sub(common)];
+    parts.extend(
+        target[common..]
+            .iter()
+            .map(|component| component.as_os_str().to_string_lossy().into_owned()),
+    );
+    parts.join("/")
 }
 
 fn bare_url_len(value: &str) -> usize {
