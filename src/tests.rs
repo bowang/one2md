@@ -370,6 +370,30 @@ fn styling_does_not_put_whitespace_inside_delimiters() {
 }
 
 #[test]
+fn fully_bold_detection_checks_every_visible_text_run() {
+    let bold = RunStyle {
+        bold: true,
+        ..RunStyle::default()
+    };
+    let hidden = RunStyle {
+        hidden: true,
+        ..RunStyle::default()
+    };
+
+    assert!(visible_segments_are_fully_bold([
+        ("First", bold),
+        (" ", RunStyle::default()),
+        ("second", bold),
+        ("hidden", hidden),
+    ]));
+    assert!(!visible_segments_are_fully_bold([
+        ("First", bold),
+        ("second", RunStyle::default()),
+    ]));
+    assert!(!visible_segments_are_fully_bold([(" ", bold)]));
+}
+
+#[test]
 fn filenames_cannot_escape_the_asset_directory() {
     assert_eq!(safe_filename("../../CON.txt"), "_CON.txt");
     assert_eq!(safe_filename("folder\\my report?.pdf"), "my_report_.pdf");

@@ -658,7 +658,7 @@ impl<'a> Renderer<'a> {
         depth: usize,
         indent_after_where: bool,
     ) -> io::Result<()> {
-        for item in items {
+        for (index, item) in items.iter().enumerate() {
             match item {
                 OutlineItem::Group(group) => {
                     self.flush_pending_code();
@@ -670,9 +670,19 @@ impl<'a> Renderer<'a> {
                     )?;
                 }
                 OutlineItem::Element(element) => {
-                    let block = self.render_outline_element(element)?;
                     let compact_before = self.previous_outline_row_nonempty;
                     let section_heading = outline_section_heading(element);
+                    let task = task_state(element);
+                    let list = element.list_contents().first();
+                    let isolated_bold_heading = section_heading.is_none()
+                        && task.is_none()
+                        && list.is_none()
+                        && index > 0
+                        && index + 1 < items.len()
+                        && outline_item_is_empty(&items[index - 1])
+                        && outline_item_is_empty(&items[index + 1])
+                        && outline_element_is_fully_bold(element);
+                    let block = self.render_outline_element(element, isolated_bold_heading)?;
                     let image_only = element
                         .contents()
                         .iter()
@@ -684,15 +694,15 @@ impl<'a> Renderer<'a> {
                         });
                     let suppress_reference_image_bullet = self.in_references && image_only;
                     let force_reference_text_bullet = self.in_references && !image_only;
-                    let task = task_state(element);
-                    let list = element.list_contents().first();
                     let is_list = section_heading.is_none()
+                        && !isolated_bold_heading
                         && (force_reference_text_bullet
                             || (!suppress_reference_image_bullet
                                 && (task.is_some() || list.is_some())));
                     let fixed_width_line = (!self.in_references
                         && !indent_after_where
                         && section_heading.is_none()
+                        && !isolated_bold_heading
                         && task.is_none()
                         && list.is_none())
                     .then(|| outline_element_fixed_width_text(element))
@@ -724,6 +734,11 @@ impl<'a> Renderer<'a> {
                         self.end_ordered_lists_from(depth);
                         self.flush_pending_math();
                         self.push_outline_heading(heading, compact_before);
+                    } else if isolated_bold_heading {
+                        self.end_ordered_lists_from(depth);
+                        self.flush_pending_math();
+                        self.prepare_outline_block(&block, compact_before);
+                        self.push_block(&format!("## {}", block.trim()));
                     } else if suppress_reference_image_bullet {
                         self.end_ordered_lists_from(depth);
                         self.flush_pending_math();
@@ -768,7 +783,9 @@ impl<'a> Renderer<'a> {
                     self.render_outline_items(
                         element.children(),
                         if is_list { depth + 1 } else { depth },
-                        indent_after_where || block.trim().eq_ignore_ascii_case("where"),
+                        indent_after_where
+                            || (!isolated_bold_heading
+                                && block.trim().eq_ignore_ascii_case("where")),
                     )?;
                 }
             }
@@ -777,7 +794,11 @@ impl<'a> Renderer<'a> {
         Ok(())
     }
 
-    fn render_outline_element(&mut self, element: &OutlineElement) -> io::Result<String> {
+    fn render_outline_element(
+        &mut self,
+        element: &OutlineElement,
+        suppress_bold: bool,
+    ) -> io::Result<String> {
         let mut blocks = Vec::new();
         for content in element.contents() {
             let block = match content {
@@ -785,6 +806,7 @@ impl<'a> Renderer<'a> {
                     text,
                     false,
                     self.in_references,
+                    suppress_bold,
                     self.page_links,
                     self.current_page,
                 ),
@@ -817,7 +839,7 @@ impl<'a> Renderer<'a> {
                 let value = if let Some(cell) = row.contents().get(index) {
                     let mut contents = Vec::new();
                     for element in cell.contents() {
-                        let value = self.render_outline_element(element)?;
+                        let value = self.render_outline_element(element, false)?;
                         if !value.trim().is_empty() {
                             contents.push(value);
                         }
@@ -1108,6 +1130,77 @@ fn outline_section_heading(element: &OutlineElement) -> Option<&'static str> {
     }
 }
 
+fn outline_item_is_empty(item: &OutlineItem) -> bool {
+    match item {
+        OutlineItem::Group(group) => group.outlines().iter().all(outline_item_is_empty),
+        OutlineItem::Element(element) => element.contents().iter().all(|content| match content {
+            Content::RichText(text) => text.text().trim().is_empty(),
+            _ => false,
+        }),
+    }
+}
+
+fn outline_element_is_fully_bold(element: &OutlineElement) -> bool {
+    let [Content::RichText(text)] = element.contents() else {
+        return false;
+    };
+    if text.text().contains(['\r', '\n', '\u{000b}', '\u{000c}']) {
+        return false;
+    }
+
+    let units = text.text().encode_utf16().collect::<Vec<_>>();
+    let end = units.len() as u32;
+    let run_ends = text.text_run_indices();
+    let run_styles = text.text_run_formatting();
+    let paragraph_style = text.paragraph_style();
+    let mut boundaries = vec![0, end];
+    boundaries.extend(run_ends.iter().copied().map(|value| value.min(end)));
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    let mut segments = Vec::new();
+    for pair in boundaries.windows(2) {
+        let start = pair[0];
+        let stop = pair[1];
+        if stop <= start {
+            continue;
+        }
+
+        let run_index = run_ends
+            .iter()
+            .position(|run_end| start < *run_end)
+            .or_else(|| (!run_styles.is_empty()).then_some(run_styles.len() - 1));
+        let style_data = run_index
+            .and_then(|index| run_styles.get(index))
+            .unwrap_or(paragraph_style);
+        let style = effective_run_style(style_data, paragraph_style);
+        let raw = remove_control_markers(&String::from_utf16_lossy(
+            &units[start as usize..stop as usize],
+        ));
+        segments.push((raw, style));
+    }
+
+    visible_segments_are_fully_bold(segments)
+}
+
+fn visible_segments_are_fully_bold<I, S>(segments: I) -> bool
+where
+    I: IntoIterator<Item = (S, RunStyle)>,
+    S: AsRef<str>,
+{
+    let mut has_visible_text = false;
+    for (text, style) in segments {
+        if style.hidden || text.as_ref().chars().all(char::is_whitespace) {
+            continue;
+        }
+        has_visible_text = true;
+        if !style.bold {
+            return false;
+        }
+    }
+    has_visible_text
+}
+
 fn outline_element_fixed_width_text(element: &OutlineElement) -> Option<String> {
     let [Content::RichText(text)] = element.contents() else {
         return None;
@@ -1167,6 +1260,7 @@ fn render_rich_text(
     text: &RichText,
     in_table: bool,
     linkify_bare_urls: bool,
+    suppress_bold: bool,
     page_links: &HashMap<String, PathBuf>,
     current_page: &Path,
 ) -> String {
@@ -1226,7 +1320,10 @@ fn render_rich_text(
         let style_data = run_index
             .and_then(|index| run_styles.get(index))
             .unwrap_or(paragraph_style);
-        let style = effective_run_style(style_data, paragraph_style);
+        let mut style = effective_run_style(style_data, paragraph_style);
+        if suppress_bold {
+            style.bold = false;
+        }
         if style.hidden {
             flush_math(&mut output, &mut math);
             flush_fixed_width(&mut output, &mut fixed_width, in_table);
