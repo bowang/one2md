@@ -304,6 +304,7 @@ struct FolderRenderer {
 struct SectionPlan<'a> {
     title: &'a str,
     directory: PathBuf,
+    index_filename: String,
     pages: Vec<PagePlan<'a>>,
 }
 
@@ -377,8 +378,9 @@ impl FolderRenderer {
             preferred
         };
         let section_name = unique_section_name(preferred, parent, &mut self.sections);
+        let index_filename = format!("_{section_name}.md");
         let directory = parent.join(section_name);
-        let mut page_names = HashSet::from(["_index.md".to_owned()]);
+        let mut page_names = HashSet::from([index_filename.clone()]);
         let mut pages = Vec::new();
 
         for series in section.page_series() {
@@ -402,6 +404,7 @@ impl FolderRenderer {
         SectionPlan {
             title: section.display_name(),
             directory,
+            index_filename,
             pages,
         }
     }
@@ -429,7 +432,7 @@ impl FolderRenderer {
         }
 
         let index = render_section_index(plan.title, &index_entries);
-        fs::write(section_dir.join("_index.md"), index.as_bytes())?;
+        fs::write(section_dir.join(plan.index_filename), index.as_bytes())?;
 
         Ok(())
     }

@@ -8,7 +8,7 @@ Supported inputs:
 - `.onetoc2` notebook table-of-contents files
 - `.onepkg` exported notebook packages
 
-Each section becomes a subfolder and all of that section's pages are written directly inside it as `.md` files named from their page titles. A section-level `_index.md` links the pages in their original order and nests OneNote subpages according to their page levels. Duplicate names receive a numeric suffix. Every image and attachment from the conversion is stored in the single `<output>/_assets` directory.
+Each section becomes a subfolder and all of that section's pages are written directly inside it as `.md` files named from their page titles. A section-level index named after its folder with an underscore prefix, such as `Algebra/_Algebra.md`, links the pages in their original order and nests OneNote subpages according to their page levels. Duplicate names receive a numeric suffix. Every image and attachment from the conversion is stored in the single `<output>/_assets` directory.
 
 The converter preserves rich-text emphasis, fixed-width fonts, web hyperlinks, internal links between converted OneNote pages, numbered and bulleted lists, task checkboxes, tables, images, attachments, stored handwriting-recognition text, and OfficeMath equations. Fixed-width runs become Markdown inline code, while multiline paragraphs made entirely of fixed-width text become fenced code blocks. OneNote math objects are emitted as `$...$` LaTeX, including fractions, roots, scripts, accents, limits, n-ary operators, delimiters, equation arrays, matrices, and mathematical Unicode symbols. Multi-row equations use the LaTeX `aligned` environment and align rows at their equals signs. Content without a Markdown equivalent is omitted with a visible HTML comment where appropriate.
 
@@ -42,7 +42,7 @@ python3 scripts/convert_onenote_backups.py /path/to/Backup -o backup-markdown
 python3 scripts/convert_onenote_backups.py /path/to/Backup -o backup-markdown --no-image-optimization
 ```
 
-The script scans recursively, treats the directory and section name together as the section identity, and passes all selected `.one` files to one batch conversion. Selected backups are temporarily staged under their logical section names so backup date suffixes do not leak into output folder names. Their notebook and section-group folders are preserved relative to the backup root, while all assets remain in a single output-root `_assets` folder and every converted section receives a hierarchy-aware `_index.md`.
+The script scans recursively, treats the directory and section name together as the section identity, and passes all selected `.one` files to one batch conversion. Selected backups are temporarily staged under their logical section names so backup date suffixes do not leak into output folder names. Their notebook and section-group folders are preserved relative to the backup root, while all assets remain in a single output-root `_assets` folder and every converted section receives a hierarchy-aware index named after its folder.
 
 Use a Markdown viewer with KaTeX or MathJax enabled to render the emitted equations.
 
