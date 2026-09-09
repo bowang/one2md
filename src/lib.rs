@@ -685,6 +685,7 @@ impl<'a> Renderer<'a> {
                         && outline_item_is_empty(&items[index - 1])
                         && outline_item_is_empty(&items[index + 1])
                         && outline_element_is_fully_bold(element);
+                    self.update_reference_section(section_heading, isolated_bold_heading);
                     let block = self.render_outline_element(element, isolated_bold_heading)?;
                     let image_only = element
                         .contents()
@@ -779,10 +780,6 @@ impl<'a> Renderer<'a> {
 
                     self.previous_outline_row_nonempty = !block.trim().is_empty();
 
-                    if let Some(heading) = section_heading {
-                        self.in_references = heading == "References";
-                    }
-
                     self.render_outline_items(
                         element.children(),
                         if is_list { depth + 1 } else { depth },
@@ -825,6 +822,18 @@ impl<'a> Renderer<'a> {
             }
         }
         Ok(blocks.join("\n\n"))
+    }
+
+    fn update_reference_section(
+        &mut self,
+        section_heading: Option<&'static str>,
+        isolated_bold_heading: bool,
+    ) {
+        if let Some(heading) = section_heading {
+            self.in_references = heading == "References";
+        } else if isolated_bold_heading {
+            self.in_references = false;
+        }
     }
 
     fn render_table(&mut self, table: &Table) -> io::Result<String> {

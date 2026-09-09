@@ -339,6 +339,27 @@ fn nested_list_equations_remain_inside_their_parent_item() {
 }
 
 #[test]
+fn an_ordinary_section_heading_ends_reference_list_mode() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut assets = AssetWriter::new(
+        directory.path().join("_assets"),
+        "../_assets".to_owned(),
+        true,
+    );
+    let page_links = HashMap::new();
+    let mut renderer = Renderer::new(&mut assets, &page_links, Path::new("Page.md"));
+
+    renderer.update_reference_section(Some("References"), false);
+    assert!(renderer.in_references);
+
+    renderer.update_reference_section(None, true);
+    assert!(!renderer.in_references);
+
+    renderer.update_reference_section(Some("See Also"), false);
+    assert!(!renderer.in_references);
+}
+
+#[test]
 fn styling_does_not_put_whitespace_inside_delimiters() {
     let style = RunStyle {
         bold: true,
