@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -133,6 +134,7 @@ def converter_command(
 
 
 def main() -> int:
+    started_at = time.perf_counter()
     args = parse_args()
     root = args.backup_directory.resolve()
     if not root.is_dir():
@@ -165,7 +167,10 @@ def main() -> int:
             args.output,
             args.no_image_optimization,
         )
-        return subprocess.run(command, check=False).returncode
+        returncode = subprocess.run(command, check=False).returncode
+
+    print(f"Total runtime: {time.perf_counter() - started_at:.2f} seconds")
+    return returncode
 
 
 if __name__ == "__main__":
