@@ -663,7 +663,7 @@ impl<'a> Renderer<'a> {
         depth: usize,
         indent_after_where: bool,
     ) -> io::Result<()> {
-        for (index, item) in items.iter().enumerate() {
+        for item in items {
             match item {
                 OutlineItem::Group(group) => {
                     self.flush_pending_code();
@@ -679,13 +679,9 @@ impl<'a> Renderer<'a> {
                     let section_heading = outline_section_heading(element);
                     let task = task_state(element);
                     let list = element.list_contents().first();
-                    let isolated_bold_heading = section_heading.is_none()
+                    let bold_heading = section_heading.is_none()
                         && task.is_none()
                         && list.is_none()
-                        && index > 0
-                        && index + 1 < items.len()
-                        && outline_item_is_empty(&items[index - 1])
-                        && outline_item_is_empty(&items[index + 1])
                         && outline_element_is_fully_bold(element);
                     let contains_table = element
                         .contents()
@@ -693,12 +689,8 @@ impl<'a> Renderer<'a> {
                         .any(|content| matches!(content, Content::Table(_)));
                     // A table starts ordinary content; reference mode would otherwise
                     // discard its images and render its rows as list continuations.
-                    self.update_reference_section(
-                        section_heading,
-                        isolated_bold_heading,
-                        contains_table,
-                    );
-                    let block = self.render_outline_element(element, isolated_bold_heading)?;
+                    self.update_reference_section(section_heading, bold_heading, contains_table);
+                    let block = self.render_outline_element(element, bold_heading)?;
                     let image_only = element
                         .contents()
                         .iter()
@@ -711,14 +703,14 @@ impl<'a> Renderer<'a> {
                     let suppress_reference_image_bullet = self.in_references && image_only;
                     let force_reference_text_bullet = self.in_references && !image_only;
                     let is_list = section_heading.is_none()
-                        && !isolated_bold_heading
+                        && !bold_heading
                         && (force_reference_text_bullet
                             || (!suppress_reference_image_bullet
                                 && (task.is_some() || list.is_some())));
                     let fixed_width_line = (!self.in_references
                         && !indent_after_where
                         && section_heading.is_none()
-                        && !isolated_bold_heading
+                        && !bold_heading
                         && task.is_none()
                         && list.is_none())
                     .then(|| outline_element_fixed_width_text(element))
@@ -750,7 +742,7 @@ impl<'a> Renderer<'a> {
                         self.end_ordered_lists_from(depth);
                         self.flush_pending_math();
                         self.push_outline_heading(heading, compact_before);
-                    } else if isolated_bold_heading {
+                    } else if bold_heading {
                         self.end_ordered_lists_from(depth);
                         self.flush_pending_math();
                         self.prepare_outline_block(&block, compact_before);
@@ -796,8 +788,7 @@ impl<'a> Renderer<'a> {
                         element.children(),
                         if is_list { depth + 1 } else { depth },
                         indent_after_where
-                            || (!isolated_bold_heading
-                                && block.trim().eq_ignore_ascii_case("where")),
+                            || (!bold_heading && block.trim().eq_ignore_ascii_case("where")),
                     )?;
                 }
             }
@@ -839,12 +830,12 @@ impl<'a> Renderer<'a> {
     fn update_reference_section(
         &mut self,
         section_heading: Option<&'static str>,
-        isolated_bold_heading: bool,
+        bold_heading: bool,
         contains_table: bool,
     ) {
         if let Some(heading) = section_heading {
             self.in_references = heading == "References";
-        } else if isolated_bold_heading || contains_table {
+        } else if bold_heading || contains_table {
             self.in_references = false;
         }
     }
@@ -1234,16 +1225,6 @@ fn outline_section_heading(element: &OutlineElement) -> Option<&'static str> {
         Some("See Also")
     } else {
         None
-    }
-}
-
-fn outline_item_is_empty(item: &OutlineItem) -> bool {
-    match item {
-        OutlineItem::Group(group) => group.outlines().iter().all(outline_item_is_empty),
-        OutlineItem::Element(element) => element.contents().iter().all(|content| match content {
-            Content::RichText(text) => text.text().trim().is_empty(),
-            _ => false,
-        }),
     }
 }
 
