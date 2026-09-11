@@ -604,6 +604,26 @@ fn office_math_objects_become_structured_latex() {
         "\\sqrt{2\\eta }"
     );
 
+    let lower_limit = math_descriptor(MathObjectType::LowerLimit, None);
+    let underbrace = math_descriptor(MathObjectType::StretchStack, Some('⏟'));
+    assert_eq!(
+        parse_math_fixture(
+            "\u{fdd0}\u{fdd0}x\u{fdef}\u{fdee}label\u{fdef}",
+            &[lower_limit, underbrace],
+        ),
+        "\\underbrace{x}_{\\operatorname{label}}"
+    );
+
+    let upper_limit = math_descriptor(MathObjectType::UpperLimit, None);
+    let overbrace = math_descriptor(MathObjectType::StretchStack, Some('⏞'));
+    assert_eq!(
+        parse_math_fixture(
+            "\u{fdd0}\u{fdd0}x\u{fdef}\u{fdee}label\u{fdef}",
+            &[upper_limit, overbrace],
+        ),
+        "\\overbrace{x}^{\\operatorname{label}}"
+    );
+
     let absolute_value = MathDescriptor {
         object_type: MathObjectType::Brackets,
         column: None,

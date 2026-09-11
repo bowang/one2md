@@ -1996,7 +1996,14 @@ fn format_math_object(descriptor: MathDescriptor, arguments: &[String]) -> Strin
             argument(2),
             braced(argument(0))
         ),
-        MathObjectType::LowerLimit => format!("{}_{{{}}}", braced(argument(0)), argument(1)),
+        MathObjectType::LowerLimit => {
+            let base = argument(0);
+            if base.starts_with("\\underbrace{") {
+                format!("{base}_{{{}}}", argument(1))
+            } else {
+                format!("{}_{{{}}}", braced(base), argument(1))
+            }
+        }
         MathObjectType::Matrix => format_matrix(descriptor.column, arguments),
         MathObjectType::Nary => format_nary(descriptor.ch, arguments),
         MathObjectType::OpChar => descriptor.ch.map_or_else(String::new, latex_math_char),
@@ -2031,7 +2038,14 @@ fn format_math_object(descriptor: MathDescriptor, arguments: &[String]) -> Strin
             format!("{}^{{{}}}", braced(argument(0)), argument(1))
         }
         MathObjectType::Underbar => format!("\\underline{{{}}}", argument(0)),
-        MathObjectType::UpperLimit => format!("{}^{{{}}}", braced(argument(0)), argument(1)),
+        MathObjectType::UpperLimit => {
+            let base = argument(0);
+            if base.starts_with("\\overbrace{") {
+                format!("{base}^{{{}}}", argument(1))
+            } else {
+                format!("{}^{{{}}}", braced(base), argument(1))
+            }
+        }
     }
 }
 
