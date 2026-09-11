@@ -8,6 +8,7 @@ use onenote_parser::page::{Page, PageContent};
 use onenote_parser::property::common::ColorRef;
 use onenote_parser::section::{Section, SectionEntry};
 use onenote_parser::warn::Report;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::ffi::OsString;
@@ -220,6 +221,7 @@ where
 
     let mut renderer = FolderRenderer::new(output, options.optimize_images)?;
     renderer.render_inputs(&parsed_inputs)?;
+    renderer.assets.finish()?;
 
     Ok(ConversionSummary {
         pages: renderer.pages,
@@ -2636,6 +2638,30 @@ struct AssetWriter {
     used: HashSet<String>,
     count: usize,
     optimize_images: bool,
+    pending_images: Vec<(PathBuf, ImagePostprocessing)>,
+}
+
+#[derive(Clone, Copy)]
+enum ImagePostprocessing {
+    ConvertTiffToPng { optimize: bool },
+    OptimizePng,
+    OptimizeJpeg,
+}
+
+impl ImagePostprocessing {
+    fn run(self, path: &Path) -> io::Result<()> {
+        match self {
+            Self::ConvertTiffToPng { optimize } => {
+                convert_tiff_to_png(path)?;
+                if optimize {
+                    optimize_png(path)?;
+                }
+                Ok(())
+            }
+            Self::OptimizePng => optimize_png(path),
+            Self::OptimizeJpeg => optimize_jpeg(path),
+        }
+    }
 }
 
 impl AssetWriter {
@@ -2646,6 +2672,7 @@ impl AssetWriter {
             used: HashSet::new(),
             count: 0,
             optimize_images,
+            pending_images: Vec::new(),
         }
     }
 
@@ -2700,12 +2727,18 @@ impl AssetWriter {
 
         let destination = self.directory.join(&name);
         if tiff_as_png {
-            convert_tiff_to_png(&destination)?;
-        }
-        if self.optimize_images && png_name && (tiff_as_png || is_png_payload(&prefix)) {
-            optimize_png(&destination)?;
+            self.pending_images.push((
+                destination,
+                ImagePostprocessing::ConvertTiffToPng {
+                    optimize: self.optimize_images,
+                },
+            ));
+        } else if self.optimize_images && png_name && is_png_payload(&prefix) {
+            self.pending_images
+                .push((destination, ImagePostprocessing::OptimizePng));
         } else if self.optimize_images && jpeg_name && is_jpeg_payload(&prefix) {
-            optimize_jpeg(&destination)?;
+            self.pending_images
+                .push((destination, ImagePostprocessing::OptimizeJpeg));
         }
         self.count += 1;
 
@@ -2714,6 +2747,12 @@ impl AssetWriter {
             self.relative_directory,
             url_encode_path(&name)
         ))
+    }
+
+    fn finish(&mut self) -> io::Result<()> {
+        std::mem::take(&mut self.pending_images)
+            .into_par_iter()
+            .try_for_each(|(path, operation)| operation.run(&path))
     }
 
     fn unique_name(&mut self, name: String) -> String {

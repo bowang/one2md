@@ -147,6 +147,7 @@ fn tiff_payloads_are_detected_and_converted_to_png() {
     assets
         .write_reader("mislabeled.png", Some("tiff"), Box::new(Cursor::new(tiff)))
         .unwrap();
+    assets.finish().unwrap();
 
     let png = fs::read(directory.path().join("mislabeled.png")).unwrap();
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
@@ -171,10 +172,6 @@ fn png_and_jpeg_assets_are_optimized() {
         .write_reader("image.bin", Some("bin"), Box::new(Cursor::new(png.clone())))
         .unwrap();
     assert_eq!(png_link, "_assets/image.png");
-    let optimized_png = fs::read(directory.path().join("image.png")).unwrap();
-    assert_eq!(&optimized_png[..8], b"\x89PNG\r\n\x1a\n");
-    assert_eq!(optimized_png[25], 3);
-    assert!(optimized_png.len() < png.len());
 
     let mut jpeg = Cursor::new(Vec::new());
     image.write_to(&mut jpeg, ImageFormat::Jpeg).unwrap();
@@ -188,9 +185,6 @@ fn png_and_jpeg_assets_are_optimized() {
         )
         .unwrap();
     assert_eq!(jpeg_link, "_assets/photo.jpg");
-    let optimized_jpeg = fs::read(directory.path().join("photo.jpg")).unwrap();
-    assert!(optimized_jpeg.starts_with(b"\xff\xd8\xff"));
-    assert!(optimized_jpeg.len() < jpeg.len());
 
     let gif_link = assets
         .write_reader(
@@ -210,6 +204,16 @@ fn png_and_jpeg_assets_are_optimized() {
         )
         .unwrap();
     assert_eq!(unknown_link, "_assets/unknown.bin");
+    assets.finish().unwrap();
+
+    let optimized_png = fs::read(directory.path().join("image.png")).unwrap();
+    assert_eq!(&optimized_png[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(optimized_png[25], 3);
+    assert!(optimized_png.len() < png.len());
+
+    let optimized_jpeg = fs::read(directory.path().join("photo.jpg")).unwrap();
+    assert!(optimized_jpeg.starts_with(b"\xff\xd8\xff"));
+    assert!(optimized_jpeg.len() < jpeg.len());
 }
 
 #[test]

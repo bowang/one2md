@@ -14,7 +14,7 @@ The converter preserves rich-text emphasis, fixed-width fonts, web hyperlinks, i
 
 ## Build and use
 
-Install ImageMagick and, unless using `--no-image-optimization`, install `pngquant` and `jpegoptim`. Make sure the required commands are available on `PATH`. The converter converts TIFF-backed `.png` assets, recovers PNG, JPEG, GIF, and TIFF extensions from `.bin` assets, optimizes all real PNG assets with `pngquant`, and applies lossless optimization to `.jpg` and `.jpeg` assets with `jpegoptim`. On macOS, install them with `brew install imagemagick pngquant jpegoptim`.
+Install ImageMagick and, unless using `--no-image-optimization`, install `pngquant` and `jpegoptim`. Make sure the required commands are available on `PATH`. The converter converts TIFF-backed `.png` assets, recovers PNG, JPEG, GIF, and TIFF extensions from `.bin` assets, optimizes all real PNG assets with `pngquant`, and applies lossless optimization to `.jpg` and `.jpeg` assets with `jpegoptim`. Image post-processing runs in parallel across assets. On macOS, install the required commands with `brew install imagemagick pngquant jpegoptim`.
 
 Pass `--no-image-optimization` to skip pngquant and jpegoptim when conversion speed or exact preservation of the original PNG/JPEG bytes is preferred. Image format detection and TIFF-to-PNG correction still run.
 
