@@ -685,7 +685,17 @@ impl<'a> Renderer<'a> {
                         && outline_item_is_empty(&items[index - 1])
                         && outline_item_is_empty(&items[index + 1])
                         && outline_element_is_fully_bold(element);
-                    self.update_reference_section(section_heading, isolated_bold_heading);
+                    let contains_table = element
+                        .contents()
+                        .iter()
+                        .any(|content| matches!(content, Content::Table(_)));
+                    // A table starts ordinary content; reference mode would otherwise
+                    // discard its images and render its rows as list continuations.
+                    self.update_reference_section(
+                        section_heading,
+                        isolated_bold_heading,
+                        contains_table,
+                    );
                     let block = self.render_outline_element(element, isolated_bold_heading)?;
                     let image_only = element
                         .contents()
@@ -828,10 +838,11 @@ impl<'a> Renderer<'a> {
         &mut self,
         section_heading: Option<&'static str>,
         isolated_bold_heading: bool,
+        contains_table: bool,
     ) {
         if let Some(heading) = section_heading {
             self.in_references = heading == "References";
-        } else if isolated_bold_heading {
+        } else if isolated_bold_heading || contains_table {
             self.in_references = false;
         }
     }
@@ -849,14 +860,7 @@ impl<'a> Renderer<'a> {
             let mut values = Vec::with_capacity(cols);
             for index in 0..cols {
                 let value = if let Some(cell) = row.contents().get(index) {
-                    let mut contents = Vec::new();
-                    for element in cell.contents() {
-                        let value = self.render_outline_element(element, false)?;
-                        if !value.trim().is_empty() {
-                            contents.push(value);
-                        }
-                    }
-                    table_cell(contents.join("\n"))
+                    table_cell(self.render_table_cell(cell.contents())?)
                 } else {
                     String::new()
                 };
@@ -879,6 +883,83 @@ impl<'a> Renderer<'a> {
             output.push_str(&markdown_table_row(row));
         }
         Ok(output)
+    }
+
+    fn render_table_cell(&mut self, elements: &[OutlineElement]) -> io::Result<String> {
+        let mut lines = Vec::new();
+        let mut ordered_list_next = Vec::new();
+        for element in elements {
+            self.render_table_cell_element(element, 0, &mut ordered_list_next, &mut lines)?;
+        }
+        Ok(lines.join("\n"))
+    }
+
+    fn render_table_cell_items(
+        &mut self,
+        items: &[OutlineItem],
+        depth: usize,
+        ordered_list_next: &mut Vec<Option<usize>>,
+        lines: &mut Vec<String>,
+    ) -> io::Result<()> {
+        for item in items {
+            match item {
+                OutlineItem::Group(group) => self.render_table_cell_items(
+                    group.outlines(),
+                    depth.max(group.child_level().saturating_sub(1) as usize),
+                    ordered_list_next,
+                    lines,
+                )?,
+                OutlineItem::Element(element) => {
+                    self.render_table_cell_element(element, depth, ordered_list_next, lines)?
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn render_table_cell_element(
+        &mut self,
+        element: &OutlineElement,
+        depth: usize,
+        ordered_list_next: &mut Vec<Option<usize>>,
+        lines: &mut Vec<String>,
+    ) -> io::Result<()> {
+        let block = self.render_outline_element(element, false)?;
+        let task = task_state(element);
+        let list = element.list_contents().first();
+        let marker = if let Some(completed) = task {
+            end_ordered_lists(ordered_list_next, depth);
+            Some(if completed { "- [x] " } else { "- [ ] " }.to_owned())
+        } else if let Some(list) = list {
+            if list.list_format().contains(&'\u{fffd}') {
+                Some(ordered_list_marker(
+                    ordered_list_next,
+                    depth,
+                    list.list_restart(),
+                ))
+            } else {
+                end_ordered_lists(ordered_list_next, depth);
+                Some("- ".to_owned())
+            }
+        } else {
+            end_ordered_lists(ordered_list_next, depth);
+            None
+        };
+
+        if !block.trim().is_empty() {
+            lines.push(format!(
+                "{}{}{}",
+                "    ".repeat(depth),
+                marker.as_deref().unwrap_or_default(),
+                block.trim()
+            ));
+        }
+        self.render_table_cell_items(
+            element.children(),
+            depth + usize::from(marker.is_some()),
+            ordered_list_next,
+            lines,
+        )
     }
 
     fn render_image(&mut self, image: &Image) -> io::Result<String> {
@@ -1080,20 +1161,11 @@ impl<'a> Renderer<'a> {
     }
 
     fn ordered_list_marker(&mut self, depth: usize, restart: Option<i32>) -> String {
-        self.ordered_list_next.truncate(depth + 1);
-        self.ordered_list_next.resize(depth + 1, None);
-        let restart = restart
-            .and_then(|value| usize::try_from(value).ok())
-            .filter(|value| *value > 0);
-        let number = restart.or(self.ordered_list_next[depth]).unwrap_or(1);
-        self.ordered_list_next[depth] = Some(number.saturating_add(1));
-        format!("{number}. ")
+        ordered_list_marker(&mut self.ordered_list_next, depth, restart)
     }
 
     fn end_ordered_lists_from(&mut self, depth: usize) {
-        if depth < self.ordered_list_next.len() {
-            self.ordered_list_next.truncate(depth);
-        }
+        end_ordered_lists(&mut self.ordered_list_next, depth);
     }
 
     fn push_list_block(&mut self, block: &str, depth: usize, marker: &str) {
@@ -1114,6 +1186,27 @@ impl<'a> Renderer<'a> {
             self.markdown.push('\n');
         }
         self.markdown.push('\n');
+    }
+}
+
+fn ordered_list_marker(
+    ordered_list_next: &mut Vec<Option<usize>>,
+    depth: usize,
+    restart: Option<i32>,
+) -> String {
+    ordered_list_next.truncate(depth + 1);
+    ordered_list_next.resize(depth + 1, None);
+    let restart = restart
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0);
+    let number = restart.or(ordered_list_next[depth]).unwrap_or(1);
+    ordered_list_next[depth] = Some(number.saturating_add(1));
+    format!("{number}. ")
+}
+
+fn end_ordered_lists(ordered_list_next: &mut Vec<Option<usize>>, depth: usize) {
+    if depth < ordered_list_next.len() {
+        ordered_list_next.truncate(depth);
     }
 }
 

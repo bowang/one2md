@@ -279,6 +279,14 @@ fn markdown_tables_keep_the_required_leading_blank_line() {
 }
 
 #[test]
+fn nested_table_cell_lines_remain_visible() {
+    assert_eq!(
+        table_cell("Big Fives\n- Universal Pictures\n    - DreamWorks".to_owned()),
+        "Big Fives<br>- Universal Pictures<br>    - DreamWorks"
+    );
+}
+
+#[test]
 fn adjacent_ordered_items_use_incrementing_markers_without_trailing_spaces() {
     let directory = tempfile::tempdir().unwrap();
     let mut assets = AssetWriter::new(
@@ -339,7 +347,7 @@ fn nested_list_equations_remain_inside_their_parent_item() {
 }
 
 #[test]
-fn an_ordinary_section_heading_ends_reference_list_mode() {
+fn ordinary_section_content_ends_reference_list_mode() {
     let directory = tempfile::tempdir().unwrap();
     let mut assets = AssetWriter::new(
         directory.path().join("_assets"),
@@ -349,13 +357,17 @@ fn an_ordinary_section_heading_ends_reference_list_mode() {
     let page_links = HashMap::new();
     let mut renderer = Renderer::new(&mut assets, &page_links, Path::new("Page.md"));
 
-    renderer.update_reference_section(Some("References"), false);
+    renderer.update_reference_section(Some("References"), false, false);
     assert!(renderer.in_references);
 
-    renderer.update_reference_section(None, true);
+    renderer.update_reference_section(None, true, false);
     assert!(!renderer.in_references);
 
-    renderer.update_reference_section(Some("See Also"), false);
+    renderer.update_reference_section(Some("References"), false, false);
+    renderer.update_reference_section(None, false, true);
+    assert!(!renderer.in_references);
+
+    renderer.update_reference_section(Some("See Also"), false, false);
     assert!(!renderer.in_references);
 }
 
