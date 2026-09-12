@@ -380,7 +380,7 @@ impl FolderRenderer {
             preferred
         };
         let section_name = unique_section_name(preferred, parent, &mut self.sections);
-        let index_filename = format!("_{section_name}.md");
+        let index_filename = format!(" {section_name}.md");
         let directory = parent.join(section_name);
         let mut page_names = HashSet::from([index_filename.clone()]);
         let mut pages = Vec::new();
