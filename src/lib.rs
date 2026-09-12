@@ -690,7 +690,7 @@ impl<'a> Renderer<'a> {
                     // A table starts ordinary content; reference mode would otherwise
                     // discard its images and render its rows as list continuations.
                     self.update_reference_section(section_heading, bold_heading, contains_table);
-                    let block = self.render_outline_element(element, bold_heading)?;
+                    let block = self.render_outline_element(element, bold_heading, false)?;
                     let image_only = element
                         .contents()
                         .iter()
@@ -801,6 +801,7 @@ impl<'a> Renderer<'a> {
         &mut self,
         element: &OutlineElement,
         suppress_bold: bool,
+        in_table: bool,
     ) -> io::Result<String> {
         let mut blocks = Vec::new();
         for content in element.contents() {
@@ -813,7 +814,7 @@ impl<'a> Renderer<'a> {
                     self.page_links,
                     self.current_page,
                 ),
-                Content::Table(table) => self.render_table(table)?,
+                Content::Table(table) => self.render_table(table, in_table)?,
                 Content::Image(_) if self.in_references => String::new(),
                 Content::Image(image) => self.render_image(image)?,
                 Content::EmbeddedFile(file) => self.render_embedded_file(file)?,
@@ -840,7 +841,7 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    fn render_table(&mut self, table: &Table) -> io::Result<String> {
+    fn render_table(&mut self, table: &Table, nested: bool) -> io::Result<String> {
         let cols = table
             .contents()
             .iter()
@@ -860,6 +861,12 @@ impl<'a> Renderer<'a> {
                 values.push(value);
             }
             rows.push(values);
+        }
+
+        if nested {
+            // Markdown pipe tables cannot be nested. Keep the fallback on one line
+            // so the surrounding Markdown table still sees exactly one cell.
+            return Ok(inline_html_table(&rows));
         }
 
         let Some((first, remaining)) = rows.split_first() else {
@@ -917,7 +924,7 @@ impl<'a> Renderer<'a> {
         ordered_list_next: &mut Vec<Option<usize>>,
         lines: &mut Vec<String>,
     ) -> io::Result<()> {
-        let block = self.render_outline_element(element, false)?;
+        let block = self.render_outline_element(element, false, true)?;
         let task = task_state(element);
         let list = element.list_contents().first();
         let marker = if let Some(completed) = task {
@@ -940,11 +947,12 @@ impl<'a> Renderer<'a> {
         };
 
         if !block.trim().is_empty() {
+            let block = block.trim().replace("\n\n", "<br>").replace('\n', "<br>");
             lines.push(format!(
                 "{}{}{}",
                 "    ".repeat(depth),
                 marker.as_deref().unwrap_or_default(),
-                block.trim()
+                block
             ));
         }
         self.render_table_cell_items(
@@ -2597,8 +2605,140 @@ fn escape_link_target(value: &str) -> String {
 }
 
 fn table_cell(value: String) -> String {
-    let flattened = value.trim().replace("\n\n", "<br>").replace('\n', "<br>");
+    let flattened = html_table_cell_lists(value.trim());
     escape_unescaped_pipes(&flattened)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HtmlListKind {
+    Ordered,
+    Unordered,
+}
+
+struct HtmlListState {
+    kind: HtmlListKind,
+    next_ordered: Option<usize>,
+}
+
+fn html_table_cell_lists(value: &str) -> String {
+    if !value.lines().any(|line| table_list_item(line).is_some()) {
+        return value.replace("\n\n", "<br>").replace('\n', "<br>");
+    }
+
+    let mut output = String::new();
+    let mut lists = Vec::new();
+    let mut previous_plain = false;
+
+    for line in value.lines() {
+        let Some((requested_depth, kind, number, content)) = table_list_item(line) else {
+            close_html_lists(&mut output, &mut lists, 0);
+            if line.is_empty() {
+                continue;
+            }
+            if previous_plain && !output.is_empty() {
+                output.push_str("<br>");
+            }
+            output.push_str(line);
+            previous_plain = true;
+            continue;
+        };
+
+        previous_plain = false;
+        let depth = requested_depth.min(lists.len());
+        close_html_lists(&mut output, &mut lists, depth + 1);
+
+        if lists.get(depth).is_some_and(|state| state.kind != kind) {
+            close_html_lists(&mut output, &mut lists, depth);
+        } else if lists.len() > depth {
+            output.push_str("</li>");
+        }
+
+        if lists.len() == depth {
+            match kind {
+                HtmlListKind::Ordered => {
+                    let number = number.unwrap_or(1);
+                    if number == 1 {
+                        output.push_str("<ol>");
+                    } else {
+                        output.push_str(&format!("<ol start=\"{number}\">"));
+                    }
+                    lists.push(HtmlListState {
+                        kind,
+                        next_ordered: Some(number.saturating_add(1)),
+                    });
+                }
+                HtmlListKind::Unordered => {
+                    output.push_str("<ul>");
+                    lists.push(HtmlListState {
+                        kind,
+                        next_ordered: None,
+                    });
+                }
+            }
+            output.push_str("<li>");
+        } else {
+            let state = &mut lists[depth];
+            if let Some(number) = number {
+                if state.next_ordered != Some(number) {
+                    output.push_str(&format!("<li value=\"{number}\">"));
+                } else {
+                    output.push_str("<li>");
+                }
+                state.next_ordered = Some(number.saturating_add(1));
+            } else {
+                output.push_str("<li>");
+            }
+        }
+        output.push_str(&content);
+    }
+
+    close_html_lists(&mut output, &mut lists, 0);
+    output
+}
+
+fn table_list_item(line: &str) -> Option<(usize, HtmlListKind, Option<usize>, String)> {
+    let trimmed = line.trim_start_matches(' ');
+    let depth = (line.len() - trimmed.len()) / 4;
+
+    if let Some(content) = trimmed.strip_prefix("- [x] ") {
+        return Some((
+            depth,
+            HtmlListKind::Unordered,
+            None,
+            format!("<input type=\"checkbox\" disabled checked> {content}"),
+        ));
+    }
+    if let Some(content) = trimmed.strip_prefix("- [ ] ") {
+        return Some((
+            depth,
+            HtmlListKind::Unordered,
+            None,
+            format!("<input type=\"checkbox\" disabled> {content}"),
+        ));
+    }
+    if let Some(content) = trimmed.strip_prefix("- ") {
+        return Some((depth, HtmlListKind::Unordered, None, content.to_owned()));
+    }
+
+    let (marker, content) = trimmed.split_once(". ")?;
+    let number = marker.parse::<usize>().ok()?;
+    Some((
+        depth,
+        HtmlListKind::Ordered,
+        Some(number),
+        content.to_owned(),
+    ))
+}
+
+fn close_html_lists(output: &mut String, lists: &mut Vec<HtmlListState>, target_len: usize) {
+    while lists.len() > target_len {
+        let state = lists.pop().expect("list stack is not empty");
+        output.push_str("</li>");
+        output.push_str(match state.kind {
+            HtmlListKind::Ordered => "</ol>",
+            HtmlListKind::Unordered => "</ul>",
+        });
+    }
 }
 
 fn markdown_table_row(cells: &[String]) -> String {
@@ -2609,6 +2749,39 @@ fn markdown_table_row(cells: &[String]) -> String {
         output.push_str(" |");
     }
     output
+}
+
+fn inline_html_table(rows: &[Vec<String>]) -> String {
+    let Some((header, body)) = rows.split_first() else {
+        return String::new();
+    };
+
+    let mut output = String::from("<table><thead>");
+    push_html_table_row(&mut output, "th", header);
+    output.push_str("</thead>");
+    if !body.is_empty() {
+        output.push_str("<tbody>");
+        for row in body {
+            push_html_table_row(&mut output, "td", row);
+        }
+        output.push_str("</tbody>");
+    }
+    output.push_str("</table>");
+    output
+}
+
+fn push_html_table_row(output: &mut String, cell_tag: &str, cells: &[String]) {
+    output.push_str("<tr>");
+    for cell in cells {
+        output.push('<');
+        output.push_str(cell_tag);
+        output.push('>');
+        output.push_str(cell);
+        output.push_str("</");
+        output.push_str(cell_tag);
+        output.push('>');
+    }
+    output.push_str("</tr>");
 }
 
 fn escape_unescaped_pipes(value: &str) -> String {

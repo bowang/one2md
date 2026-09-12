@@ -286,8 +286,43 @@ fn markdown_tables_keep_the_required_leading_blank_line() {
 fn nested_table_cell_lines_remain_visible() {
     assert_eq!(
         table_cell("Big Fives\n- Universal Pictures\n    - DreamWorks".to_owned()),
-        "Big Fives<br>- Universal Pictures<br>    - DreamWorks"
+        "Big Fives<ul><li>Universal Pictures<ul><li>DreamWorks</li></ul></li></ul>"
     );
+}
+
+#[test]
+fn table_cell_lists_use_nested_html_tags() {
+    assert_eq!(
+        table_cell("1. First\n    - Child\n2. Second\n3. Third".to_owned()),
+        "<ol><li>First<ul><li>Child</li></ul></li><li>Second</li><li>Third</li></ol>"
+    );
+    assert_eq!(
+        table_cell("3. Third\n5. Fifth".to_owned()),
+        "<ol start=\"3\"><li>Third</li><li value=\"5\">Fifth</li></ol>"
+    );
+    assert_eq!(
+        table_cell("- [ ] Todo\n- [x] Done".to_owned()),
+        "<ul><li><input type=\"checkbox\" disabled> Todo</li><li><input type=\"checkbox\" disabled checked> Done</li></ul>"
+    );
+}
+
+#[test]
+fn nested_tables_use_inline_html_instead_of_literal_markdown_pipes() {
+    let rows = vec![
+        vec!["#Dimensions".to_owned(), "English".to_owned()],
+        vec!["2".to_owned(), "polygon".to_owned()],
+    ];
+
+    let nested = inline_html_table(&rows);
+    assert_eq!(
+        nested,
+        "<table><thead><tr><th>#Dimensions</th><th>English</th></tr></thead><tbody><tr><td>2</td><td>polygon</td></tr></tbody></table>"
+    );
+    assert_eq!(
+        table_cell(format!("Geometric objects\n{nested}")),
+        format!("Geometric objects<br>{nested}")
+    );
+    assert!(!nested.contains("| --- |"));
 }
 
 #[test]
