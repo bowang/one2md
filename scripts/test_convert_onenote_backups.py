@@ -4,13 +4,19 @@ import os
 import sys
 import tempfile
 import unittest
+from argparse import Namespace
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from convert_onenote_backups import (
     backup_identity,
+    clean_output_directory,
     converter_command,
+    main,
     select_latest_backups,
     stage_backups,
 )
@@ -75,6 +81,48 @@ class BackupSelectionTests(unittest.TestCase):
         )
 
         self.assertEqual(command[-1], "--no-image-optimization")
+
+    def test_existing_output_is_skipped_without_force(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "output"
+            output.mkdir()
+            existing = output / "existing.md"
+            existing.write_text("keep me")
+            args = Namespace(
+                backup_directory=root,
+                output=output,
+                one2md=None,
+                force=False,
+                no_image_optimization=False,
+            )
+
+            stdout = StringIO()
+            with patch("convert_onenote_backups.parse_args", return_value=args):
+                with redirect_stdout(stdout):
+                    returncode = main()
+
+            self.assertEqual(returncode, 0)
+            self.assertEqual(existing.read_text(), "keep me")
+            self.assertIn("Skipping conversion", stdout.getvalue())
+
+    def test_clean_output_preserves_only_obsidian_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            obsidian = output / ".obsidian"
+            obsidian.mkdir()
+            config = obsidian / "app.json"
+            config.write_text("settings")
+            (output / "page.md").write_text("page")
+            (output / ".hidden").write_text("hidden")
+            nested = output / "Notebook"
+            nested.mkdir()
+            (nested / "Section.md").write_text("section")
+
+            clean_output_directory(output)
+
+            self.assertEqual(list(output.iterdir()), [obsidian])
+            self.assertEqual(config.read_text(), "settings")
 
 
 if __name__ == "__main__":

@@ -95,6 +95,19 @@ def stage_backups(backups: list[Backup], staging_root: Path) -> list[Path]:
     return staged
 
 
+def clean_output_directory(output: Path) -> None:
+    if output.is_symlink() or not output.is_dir():
+        raise NotADirectoryError(f"output path is not a directory: {output}")
+
+    for path in output.iterdir():
+        if path.name == ".obsidian" and path.is_dir() and not path.is_symlink():
+            continue
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -105,6 +118,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("backup_directory", type=Path)
     parser.add_argument("-o", "--output", type=Path, required=True)
     parser.add_argument("--one2md", type=Path, help="path to the one2md executable")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="replace existing output while preserving its .obsidian directory",
+    )
     parser.add_argument(
         "--no-image-optimization",
         action="store_true",
@@ -141,6 +159,14 @@ def main() -> int:
         print(f"error: backup directory does not exist: {root}", file=sys.stderr)
         return 2
 
+    output = args.output
+    if output.exists() and not args.force:
+        if not output.is_dir():
+            print(f"error: output path is not a directory: {output}", file=sys.stderr)
+            return 2
+        print(f"Skipping conversion: output directory already exists: {output}")
+        return 0
+
     backups = select_latest_backups(root)
     if not backups:
         print(f"error: no .one backup files found under {root}", file=sys.stderr)
@@ -151,6 +177,13 @@ def main() -> int:
     except FileNotFoundError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
+
+    if output.exists():
+        try:
+            clean_output_directory(output)
+        except OSError as error:
+            print(f"error: could not clean output directory {output}: {error}", file=sys.stderr)
+            return 1
 
     print(f"Selected {len(backups)} latest section backup(s):")
     for backup in backups:
@@ -164,7 +197,7 @@ def main() -> int:
             converter,
             staged,
             Path(staging_directory),
-            args.output,
+            output,
             args.no_image_optimization,
         )
         returncode = subprocess.run(command, check=False).returncode
