@@ -37,6 +37,7 @@ class BackupSelectionTests(unittest.TestCase):
             / "Library/Containers/com.microsoft.onenote.mac/Data/Library/Application Support"
             / "Microsoft User Data/OneNote/15.0/Backup",
         )
+        self.assertEqual(args.color_mode, "dark")
 
     def test_latest_filesystem_modification_time_wins(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -92,10 +93,23 @@ class BackupSelectionTests(unittest.TestCase):
             [Path("/staging/Notebook/Research.one")],
             Path("/staging"),
             Path("/output"),
+            "dark",
             True,
         )
 
         self.assertEqual(command[-1], "--no-image-optimization")
+
+    def test_color_mode_is_forwarded(self):
+        command = converter_command(
+            Path("/bin/one2md"),
+            [Path("/staging/Notebook/Research.one")],
+            Path("/staging"),
+            Path("/output"),
+            "light",
+            False,
+        )
+
+        self.assertEqual(command[-2:], ["--color-mode", "light"])
 
     def test_existing_output_is_skipped_without_force(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -110,6 +124,7 @@ class BackupSelectionTests(unittest.TestCase):
                 one2md=None,
                 force=False,
                 no_image_optimization=False,
+                color_mode="dark",
             )
 
             stdout = StringIO()

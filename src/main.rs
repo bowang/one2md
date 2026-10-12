@@ -1,5 +1,6 @@
 use one2md::{
-    ConversionOptions, convert_files_with_hierarchy_and_options, convert_files_with_options,
+    ColorMode, ConversionOptions, convert_files_with_hierarchy_and_options,
+    convert_files_with_options,
 };
 use std::env;
 use std::ffi::OsString;
@@ -10,7 +11,7 @@ const HELP: &str = "\
 Convert Microsoft OneNote files to a folder of Markdown pages.
 
 Usage:
-  one2md <INPUT>... [-o <OUTPUT>]
+  one2md <INPUT>... [-o <OUTPUT>] [--color-mode <MODE>]
 
 Arguments:
   <INPUT>...          One or more .one, .onetoc2, or .onepkg inputs
@@ -18,6 +19,7 @@ Arguments:
 Options:
   -o, --output DIR    Output directory (default: INPUT without its extension)
   --source-root DIR   Preserve input parent folders relative to DIR
+  --color-mode MODE   Render colors for dark or light backgrounds (default: dark)
   --no-image-optimization
                       Skip pngquant and jpegoptim size optimization
   -h, --help          Show this help
@@ -38,6 +40,7 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), (u8, String)> {
     let mut inputs = Vec::new();
     let mut output = None;
     let mut source_root = None;
+    let mut color_mode = None;
     let mut optimize_images = true;
     let mut args = args.peekable();
 
@@ -67,6 +70,21 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), (u8, String)> {
                     return Err((2, "--source-root may only be specified once".to_owned()));
                 }
             }
+            Some("--color-mode") => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| (2, "--color-mode requires light or dark".to_owned()))?;
+                let parsed = match value.to_str() {
+                    Some("dark") => ColorMode::Dark,
+                    Some("light") => ColorMode::Light,
+                    _ => {
+                        return Err((2, "--color-mode must be either light or dark".to_owned()));
+                    }
+                };
+                if color_mode.replace(parsed).is_some() {
+                    return Err((2, "--color-mode may only be specified once".to_owned()));
+                }
+            }
             Some("--no-image-optimization") => optimize_images = false,
             Some(value) if value.starts_with('-') => {
                 return Err((2, format!("unknown option: {value}")));
@@ -91,7 +109,10 @@ fn run(args: impl Iterator<Item = OsString>) -> Result<(), (u8, String)> {
         }
     };
 
-    let options = ConversionOptions { optimize_images };
+    let options = ConversionOptions {
+        optimize_images,
+        color_mode: color_mode.unwrap_or_default(),
+    };
     let summary = match source_root {
         Some(source_root) => {
             convert_files_with_hierarchy_and_options(&inputs, &source_root, &output, options)
@@ -127,5 +148,19 @@ mod tests {
     fn image_optimization_flag_is_recognized() {
         let error = run([OsString::from("--no-image-optimization")].into_iter()).unwrap_err();
         assert!(error.1.starts_with("missing input file"));
+    }
+
+    #[test]
+    fn color_mode_flag_is_recognized() {
+        let error =
+            run([OsString::from("--color-mode"), OsString::from("light")].into_iter()).unwrap_err();
+        assert!(error.1.starts_with("missing input file"));
+    }
+
+    #[test]
+    fn invalid_color_mode_is_rejected() {
+        let error =
+            run([OsString::from("--color-mode"), OsString::from("sepia")].into_iter()).unwrap_err();
+        assert_eq!(error.1, "--color-mode must be either light or dark");
     }
 }

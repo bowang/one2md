@@ -10,7 +10,7 @@ Supported inputs:
 
 Each section becomes a subfolder and all of that section's pages are written directly inside it as `.md` files named from their page titles. A section-level index named after its folder with a space prefix, such as `Algebra/ Algebra.md`, links the pages in their original order and nests OneNote subpages according to their page levels. Duplicate names receive a numeric suffix. Every image and attachment from the conversion is stored in the single `<output>/_assets` directory.
 
-The converter preserves rich-text emphasis, fixed-width fonts, web hyperlinks, internal links between converted OneNote pages, numbered and bulleted lists, task checkboxes, tables, images, attachments, stored handwriting-recognition text, and OfficeMath equations. Fixed-width runs become Markdown inline code, while multiline paragraphs made entirely of fixed-width text become fenced code blocks. OneNote math objects are emitted as `$...$` LaTeX, including fractions, roots, scripts, accents, limits, n-ary operators, delimiters, equation arrays, matrices, and mathematical Unicode symbols. Multi-row equations use the LaTeX `aligned` environment and align rows at their equals signs. Content without a Markdown equivalent is omitted with a visible HTML comment where appropriate.
+The converter preserves rich-text emphasis and color, fixed-width fonts, web hyperlinks, internal links between converted OneNote pages, numbered and bulleted lists, task checkboxes, tables, images, attachments, stored handwriting-recognition text, and OfficeMath equations. Fixed-width runs become Markdown inline code, while multiline paragraphs made entirely of fixed-width text become fenced code blocks. OneNote math objects are emitted as `$...$` LaTeX, including fractions, roots, scripts, accents, limits, n-ary operators, delimiters, equation arrays, matrices, and mathematical Unicode symbols. Multi-row equations use the LaTeX `aligned` environment and align rows at their equals signs. Content without a Markdown equivalent is omitted with a visible HTML comment where appropriate.
 
 ## Build and use
 
@@ -18,12 +18,15 @@ Install ImageMagick and, unless using `--no-image-optimization`, install `pngqua
 
 Pass `--no-image-optimization` to skip pngquant and jpegoptim when conversion speed or exact preservation of the original PNG/JPEG bytes is preferred. Image format detection and TIFF-to-PNG correction still run.
 
+Text colors default to OneNote's dark-mode appearance. Pass `--color-mode light` to preserve the RGB values used by OneNote in light mode, or `--color-mode dark` to select the default explicitly.
+
 ```sh
 cargo build --release
 ./target/release/one2md Notes.one
 ./target/release/one2md Notebook.onetoc2 -o notebook
 ./target/release/one2md Export.onepkg --output export
 ./target/release/one2md Notes.one -o notes --no-image-optimization
+./target/release/one2md Notes.one -o notes-light --color-mode light
 ```
 
 For the supplied example:
@@ -42,6 +45,7 @@ python3 scripts/convert_onenote_backups.py -o backup-markdown
 python3 scripts/convert_onenote_backups.py /path/to/Backup -o backup-markdown
 python3 scripts/convert_onenote_backups.py /path/to/Backup -o backup-markdown --force
 python3 scripts/convert_onenote_backups.py /path/to/Backup -o backup-markdown --no-image-optimization
+python3 scripts/convert_onenote_backups.py /path/to/Backup -o backup-markdown-light --color-mode light
 ```
 
 When the backup directory is omitted, the script uses the standard macOS OneNote backup location at `~/Library/Containers/com.microsoft.onenote.mac/Data/Library/Application Support/Microsoft User Data/OneNote/15.0/Backup`. The script skips conversion when the output directory already exists. Pass `--force` to remove its existing contents and regenerate the output while preserving the top-level `.obsidian` directory. The script scans recursively, treats the directory and section name together as the section identity, and passes all selected `.one` files to one batch conversion. Selected backups are temporarily staged under their logical section names so backup date suffixes do not leak into output folder names. Their notebook and section-group folders are preserved relative to the backup root, while all assets remain in a single output-root `_assets` folder and every converted section receives a hierarchy-aware index named after its folder.

@@ -142,6 +142,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="skip pngquant and jpegoptim size optimization",
     )
+    parser.add_argument(
+        "--color-mode",
+        choices=("dark", "light"),
+        default="dark",
+        help="render colors for dark or light backgrounds (default: dark)",
+    )
     return parser.parse_args()
 
 
@@ -150,6 +156,7 @@ def converter_command(
     staged: list[Path],
     source_root: Path,
     output: Path,
+    color_mode: str,
     no_image_optimization: bool,
 ) -> list[str]:
     command = [
@@ -159,6 +166,8 @@ def converter_command(
         str(source_root),
         "-o",
         str(output),
+        "--color-mode",
+        color_mode,
     ]
     if no_image_optimization:
         command.append("--no-image-optimization")
@@ -212,6 +221,7 @@ def main() -> int:
             staged,
             Path(staging_directory),
             output,
+            args.color_mode,
             args.no_image_optimization,
         )
         returncode = subprocess.run(command, check=False).returncode

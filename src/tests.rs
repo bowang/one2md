@@ -222,6 +222,7 @@ fn image_optimization_can_be_disabled() {
     use std::io::Cursor;
 
     assert!(ConversionOptions::default().optimize_images);
+    assert_eq!(ConversionOptions::default().color_mode, ColorMode::Dark);
     let image = DynamicImage::ImageRgba8(ImageBuffer::from_pixel(64, 64, Rgba([1, 2, 3, 255])));
     let directory = tempfile::tempdir().unwrap();
     let mut assets = AssetWriter::new(directory.path().to_owned(), "_assets".to_owned(), false);
@@ -256,6 +257,14 @@ fn image_optimization_can_be_disabled() {
         fs::read(directory.path().join("unoptimized.jpg")).unwrap(),
         jpeg
     );
+}
+
+#[test]
+fn color_modes_match_onenote_light_and_dark_appearances() {
+    let stored_blue = (0, 112, 192);
+
+    assert_eq!(ColorMode::Light.display_color(stored_blue), stored_blue);
+    assert_eq!(ColorMode::Dark.display_color(stored_blue), (61, 174, 255));
 }
 
 #[test]
@@ -422,22 +431,22 @@ fn styling_does_not_put_whitespace_inside_delimiters() {
         apply_style(
             "colored",
             RunStyle {
-                colored: true,
+                color: Some((0x12, 0x34, 0x56)),
                 ..RunStyle::default()
             }
         ),
-        "<em>colored</em>"
+        "<span style=\"color: #123456\">colored</span>"
     );
     assert_eq!(
         apply_style(
             "colored italic",
             RunStyle {
                 italic: true,
-                colored: true,
+                color: Some((0xab, 0xcd, 0xef)),
                 ..RunStyle::default()
             }
         ),
-        "<em>colored italic</em>"
+        "<span style=\"color: #abcdef\">*colored italic*</span>"
     );
 }
 

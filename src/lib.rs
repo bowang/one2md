@@ -31,17 +31,39 @@ pub struct ConversionSummary {
     pub output: PathBuf,
 }
 
-/// Optional conversion behavior. Defaults preserve the existing CLI behavior.
+/// The OneNote appearance to use when rendering explicit text colors.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ColorMode {
+    /// Render colors as OneNote displays them on a dark page.
+    #[default]
+    Dark,
+    /// Render the colors stored in the OneNote file without adjustment.
+    Light,
+}
+
+impl ColorMode {
+    fn display_color(self, color: (u8, u8, u8)) -> (u8, u8, u8) {
+        match self {
+            Self::Dark => dark_mode_color(color),
+            Self::Light => color,
+        }
+    }
+}
+
+/// Optional conversion behavior.
 #[derive(Clone, Copy, Debug)]
 pub struct ConversionOptions {
     /// Whether PNG and JPEG assets should be optimized for size.
     pub optimize_images: bool,
+    /// The OneNote appearance to use for explicit text colors.
+    pub color_mode: ColorMode,
 }
 
 impl Default for ConversionOptions {
     fn default() -> Self {
         Self {
             optimize_images: true,
+            color_mode: ColorMode::default(),
         }
     }
 }
@@ -219,7 +241,7 @@ where
         }
     }
 
-    let mut renderer = FolderRenderer::new(output, options.optimize_images)?;
+    let mut renderer = FolderRenderer::new(output, options.optimize_images, options.color_mode)?;
     renderer.render_inputs(&parsed_inputs)?;
     renderer.assets.finish()?;
 
@@ -301,6 +323,7 @@ struct FolderRenderer {
     page_links: HashMap<String, PathBuf>,
     pages: usize,
     assets: AssetWriter,
+    color_mode: ColorMode,
 }
 
 struct SectionPlan<'a> {
@@ -323,7 +346,7 @@ struct PageIndexEntry {
 }
 
 impl FolderRenderer {
-    fn new(root: &Path, optimize_images: bool) -> io::Result<Self> {
+    fn new(root: &Path, optimize_images: bool, color_mode: ColorMode) -> io::Result<Self> {
         fs::create_dir_all(root)?;
         Ok(Self {
             root: root.to_owned(),
@@ -335,6 +358,7 @@ impl FolderRenderer {
                 "../_assets".to_owned(),
                 optimize_images,
             ),
+            color_mode,
         })
     }
 
@@ -423,7 +447,12 @@ impl FolderRenderer {
         for planned_page in plan.pages {
             let relative_path = plan.directory.join(&planned_page.filename);
             let page_path = self.root.join(&relative_path);
-            let mut renderer = Renderer::new(&mut self.assets, &self.page_links, &relative_path);
+            let mut renderer = Renderer::with_color_mode(
+                &mut self.assets,
+                &self.page_links,
+                &relative_path,
+                self.color_mode,
+            );
             renderer.render_page(planned_page.page, &planned_page.title)?;
             fs::write(&page_path, renderer.markdown.as_bytes())?;
             index_entries.push(PageIndexEntry {
@@ -552,6 +581,7 @@ struct Renderer<'a> {
     assets: &'a mut AssetWriter,
     page_links: &'a HashMap<String, PathBuf>,
     current_page: &'a Path,
+    color_mode: ColorMode,
     pending_math_rows: Vec<String>,
     pending_math_compact_before: bool,
     pending_math_depth: usize,
@@ -572,16 +602,27 @@ const TAB_INDENT: &str = "\u{2003}\u{2003}";
 const REFERENCE_IMAGE_INDENT: &str = "\u{2003}";
 
 impl<'a> Renderer<'a> {
+    #[cfg(test)]
     fn new(
         assets: &'a mut AssetWriter,
         page_links: &'a HashMap<String, PathBuf>,
         current_page: &'a Path,
+    ) -> Self {
+        Self::with_color_mode(assets, page_links, current_page, ColorMode::default())
+    }
+
+    fn with_color_mode(
+        assets: &'a mut AssetWriter,
+        page_links: &'a HashMap<String, PathBuf>,
+        current_page: &'a Path,
+        color_mode: ColorMode,
     ) -> Self {
         Self {
             markdown: String::new(),
             assets,
             page_links,
             current_page,
+            color_mode,
             pending_math_rows: Vec::new(),
             pending_math_compact_before: false,
             pending_math_depth: 0,
@@ -811,6 +852,7 @@ impl<'a> Renderer<'a> {
                     false,
                     self.in_references,
                     suppress_bold,
+                    self.color_mode,
                     self.page_links,
                     self.current_page,
                 ),
@@ -1328,7 +1370,7 @@ struct RunStyle {
     strikethrough: bool,
     superscript: bool,
     subscript: bool,
-    colored: bool,
+    color: Option<(u8, u8, u8)>,
     hidden: bool,
     fixed_width: bool,
 }
@@ -1342,14 +1384,65 @@ impl From<&ParagraphStyling> for RunStyle {
             strikethrough: style.strikethrough(),
             superscript: style.superscript(),
             subscript: style.subscript(),
-            colored: matches!(
-                style.font_color(),
-                Some(ColorRef::Manual { r, g, b }) if (r, g, b) != (0, 0, 0)
-            ),
+            color: match style.font_color() {
+                Some(ColorRef::Manual { r, g, b }) if (r, g, b) != (0, 0, 0) => Some((r, g, b)),
+                _ => None,
+            },
             hidden: style.hidden(),
             fixed_width: style.font().is_some_and(is_fixed_width_font),
         }
     }
+}
+
+fn dark_mode_color((red, green, blue): (u8, u8, u8)) -> (u8, u8, u8) {
+    let red = f64::from(red) / 255.0;
+    let green = f64::from(green) / 255.0;
+    let blue = f64::from(blue) / 255.0;
+    let maximum = red.max(green).max(blue);
+    let minimum = red.min(green).min(blue);
+    let delta = maximum - minimum;
+    let lightness = (maximum + minimum) / 2.0;
+    // OneNote mirrors whole-percent HSL lightness when displaying a dark canvas.
+    let dark_lightness = 1.0 - (lightness * 100.0).round() / 100.0;
+
+    if delta == 0.0 {
+        let value = (dark_lightness * 255.0).round() as u8;
+        return (value, value, value);
+    }
+
+    let saturation = delta / (1.0 - (2.0 * lightness - 1.0).abs());
+    let hue = if maximum == red {
+        ((green - blue) / delta).rem_euclid(6.0) / 6.0
+    } else if maximum == green {
+        ((blue - red) / delta + 2.0) / 6.0
+    } else {
+        ((red - green) / delta + 4.0) / 6.0
+    };
+    hsl_to_rgb(hue, saturation, dark_lightness)
+}
+
+fn hsl_to_rgb(hue: f64, saturation: f64, lightness: f64) -> (u8, u8, u8) {
+    let q = if lightness < 0.5 {
+        lightness * (1.0 + saturation)
+    } else {
+        lightness + saturation - lightness * saturation
+    };
+    let p = 2.0 * lightness - q;
+    let channel = |offset: f64| {
+        let value = (hue + offset).rem_euclid(1.0);
+        let value = if value < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * value
+        } else if value < 0.5 {
+            q
+        } else if value < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - value) * 6.0
+        } else {
+            p
+        };
+        (value * 255.0).round() as u8
+    };
+
+    (channel(1.0 / 3.0), channel(0.0), channel(-1.0 / 3.0))
 }
 
 fn render_rich_text(
@@ -1357,6 +1450,7 @@ fn render_rich_text(
     in_table: bool,
     linkify_bare_urls: bool,
     suppress_bold: bool,
+    color_mode: ColorMode,
     page_links: &HashMap<String, PathBuf>,
     current_page: &Path,
 ) -> String {
@@ -1417,6 +1511,7 @@ fn render_rich_text(
             .and_then(|index| run_styles.get(index))
             .unwrap_or(paragraph_style);
         let mut style = effective_run_style(style_data, paragraph_style);
+        style.color = style.color.map(|color| color_mode.display_color(color));
         if suppress_bold {
             style.bold = false;
         }
@@ -2559,10 +2654,11 @@ fn apply_style(value: &str, style: RunStyle) -> String {
     if style.strikethrough {
         core = format!("~~{core}~~");
     }
-    if style.colored {
-        core = format!("<em>{core}</em>");
-    } else if style.italic {
+    if style.italic {
         core = format!("*{core}*");
+    }
+    if let Some((red, green, blue)) = style.color {
+        core = format!("<span style=\"color: #{red:02x}{green:02x}{blue:02x}\">{core}</span>");
     }
     if style.bold {
         core = format!("**{core}**");
