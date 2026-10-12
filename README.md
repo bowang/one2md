@@ -38,12 +38,13 @@ To convert a directory of OneNote backups while selecting only the latest filesy
 
 ```sh
 cargo build --release
+python3 scripts/convert_onenote_backups.py -o backup-markdown
 python3 scripts/convert_onenote_backups.py /path/to/Backup -o backup-markdown
-python3 scripts/convert_onenote_backups.py /path/to/Backup -o backup-markdown --no-image-optimization
 python3 scripts/convert_onenote_backups.py /path/to/Backup -o backup-markdown --force
+python3 scripts/convert_onenote_backups.py /path/to/Backup -o backup-markdown --no-image-optimization
 ```
 
-The script skips conversion when the output directory already exists. Pass `--force` to remove its existing contents and regenerate the output while preserving the top-level `.obsidian` directory. The script scans recursively, treats the directory and section name together as the section identity, and passes all selected `.one` files to one batch conversion. Selected backups are temporarily staged under their logical section names so backup date suffixes do not leak into output folder names. Their notebook and section-group folders are preserved relative to the backup root, while all assets remain in a single output-root `_assets` folder and every converted section receives a hierarchy-aware index named after its folder.
+When the backup directory is omitted, the script uses the standard macOS OneNote backup location at `~/Library/Containers/com.microsoft.onenote.mac/Data/Library/Application Support/Microsoft User Data/OneNote/15.0/Backup`. The script skips conversion when the output directory already exists. Pass `--force` to remove its existing contents and regenerate the output while preserving the top-level `.obsidian` directory. The script scans recursively, treats the directory and section name together as the section identity, and passes all selected `.one` files to one batch conversion. Selected backups are temporarily staged under their logical section names so backup date suffixes do not leak into output folder names. Their notebook and section-group folders are preserved relative to the backup root, while all assets remain in a single output-root `_assets` folder and every converted section receives a hierarchy-aware index named after its folder.
 
 Use a Markdown viewer with KaTeX or MathJax enabled to render the emitted equations.
 

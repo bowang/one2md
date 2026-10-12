@@ -17,12 +17,27 @@ from convert_onenote_backups import (
     clean_output_directory,
     converter_command,
     main,
+    parse_args,
     select_latest_backups,
     stage_backups,
 )
 
 
 class BackupSelectionTests(unittest.TestCase):
+    def test_missing_backup_directory_uses_default_onenote_location(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            with patch.object(Path, "home", return_value=home):
+                with patch.object(sys, "argv", ["convert_onenote_backups.py", "-o", "out"]):
+                    args = parse_args()
+
+        self.assertEqual(
+            args.backup_directory,
+            home
+            / "Library/Containers/com.microsoft.onenote.mac/Data/Library/Application Support"
+            / "Microsoft User Data/OneNote/15.0/Backup",
+        )
+
     def test_latest_filesystem_modification_time_wins(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

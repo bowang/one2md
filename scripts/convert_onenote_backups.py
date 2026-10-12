@@ -20,6 +20,14 @@ ONENOTE_EXTENSION = re.compile(r"\.one", re.IGNORECASE)
 TRAILING_BACKUP_LABEL = re.compile(r"\s*\(\s*On\b.*\)\s*$", re.IGNORECASE)
 
 
+def default_backup_directory() -> Path:
+    return (
+        Path.home()
+        / "Library/Containers/com.microsoft.onenote.mac/Data/Library/Application Support"
+        / "Microsoft User Data/OneNote/15.0/Backup"
+    )
+
+
 @dataclass(frozen=True)
 class Backup:
     path: Path
@@ -115,7 +123,13 @@ def parse_args() -> argparse.Namespace:
             "convert the selected sections in one hierarchy-aware batch."
         )
     )
-    parser.add_argument("backup_directory", type=Path)
+    parser.add_argument(
+        "backup_directory",
+        nargs="?",
+        type=Path,
+        default=default_backup_directory(),
+        help="backup directory (defaults to the standard macOS OneNote backup location)",
+    )
     parser.add_argument("-o", "--output", type=Path, required=True)
     parser.add_argument("--one2md", type=Path, help="path to the one2md executable")
     parser.add_argument(
